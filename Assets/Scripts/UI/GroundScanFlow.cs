@@ -48,6 +48,8 @@ namespace AR7103.UI
         public Image reticleRing;
         public Image reticleFill;
         public Button backButton;
+        [Tooltip("Card showing the animal's photo, shown while waiting for its book page.")]
+        public CanvasGroup pageHint;
 
         [Header("After locking")]
         [Tooltip("Animal to place on the locked ground. Leave empty to only save the ground.")]
@@ -113,6 +115,7 @@ namespace AR7103.UI
                     "Point your camera at the ground and move your phone slowly.",
                     "Searching", idle);
             if (reticleFill != null) reticleFill.fillAmount = 0f;
+            if (pageHint != null) { pageHint.alpha = 0f; pageHint.blocksRaycasts = false; }
             StartCoroutine(UIAnim.Fade(fader, 0f, 0.6f));    // covers camera start-up
         }
 
@@ -202,6 +205,7 @@ namespace AR7103.UI
                 ? contentPositioning.AnchorStage.transform
                 : null;
             GroundAnchorStore.Store(anchor);
+            Haptics.Medium();
 
             if (trigger == null || _pageSeen) { Place(); return; }
 
@@ -218,8 +222,19 @@ namespace AR7103.UI
             yield return new WaitForSecondsRealtime(0.6f);
             if (_state != State.AwaitingPage) yield break;        // page already found
             SetCopy(pageTitle, pageSubtitle, "Waiting for the page", accent);
-            // The floor reticle means nothing now that the camera should be on the book
+            // The floor reticle means nothing now that the camera should be on the book;
+            // in its place, a picture of what to look for
             yield return UIAnim.Fade(reticleGroup, 0f, 0.35f);
+            if (_state != State.AwaitingPage || pageHint == null) yield break;
+            yield return UIAnim.Fade(pageHint, 1f, 0.35f);
+            var rt = (RectTransform)pageHint.transform;
+            while (_state == State.AwaitingPage)
+            {
+                // a slow breathe, so it reads as "waiting for this"
+                float s = 1f + 0.018f * Mathf.Sin(Time.unscaledTime * 2.4f);
+                rt.localScale = new Vector3(s, s, 1f);
+                yield return null;
+            }
         }
 
         void Place()
@@ -238,6 +253,8 @@ namespace AR7103.UI
             }
 
             SetCopy(lockedTitle, lockedSubtitle, "Placed", success);
+            Haptics.Success();
+            if (pageHint != null && pageHint.alpha > 0f) StartCoroutine(UIAnim.Fade(pageHint, 0f, 0.25f));
             StartCoroutine(Finish());
         }
 

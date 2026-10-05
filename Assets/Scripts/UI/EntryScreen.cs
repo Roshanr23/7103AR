@@ -174,6 +174,7 @@ namespace AR7103.UI
 
         void OnPageChanged(int page)
         {
+            Haptics.Tick();
             ShowBackdrop(page, instant: false);
             RefreshAction(Scanned);
         }
@@ -243,6 +244,7 @@ namespace AR7103.UI
             _target = target;
             LastPage = carousel.Page;
             _leaving = true;
+            Haptics.Light();
             scanButton.interactable = false;
             StartCoroutine(Leave());
         }

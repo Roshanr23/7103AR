@@ -12,8 +12,14 @@ EditorBuildSettings:
     path: Assets/Scenes/AR_Squirrel.unity
     guid: d261f3a39e6d54f478c279353e90377f
   - enabled: 1
+    path: Assets/Scenes/AR_Fox.unity
+    guid: b56d995fc9f62459495cca6e61a45d23
+  - enabled: 1
     path: Assets/Scenes/AR_Deer.unity
     guid: d1a0cfbe32d74411792ee845758e3884
+  - enabled: 1
+    path: Assets/Scenes/AR_Hare.unity
+    guid: 1b7817f3c465b46129fa63ae76d608e9
   - enabled: 1
     path: Assets/Scenes/AR_Owl.unity
     guid: 2d520780fd87f4975b0c1b41c1e1d8d3

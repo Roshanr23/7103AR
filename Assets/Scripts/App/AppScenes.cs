@@ -8,5 +8,7 @@ namespace AR7103.App
         public const string Squirrel   = "AR_Squirrel";
         public const string Deer       = "AR_Deer";
         public const string Owl        = "AR_Owl";
+        public const string Fox        = "AR_Fox";
+        public const string Hare       = "AR_Hare";
     }
 }

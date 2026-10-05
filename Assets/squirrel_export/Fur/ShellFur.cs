@@ -6,11 +6,12 @@ using UnityEngine.Rendering;
 /// its normals, while the fur shader keeps only the pixels that belong to a strand tall
 /// enough to reach that shell. Stacked together the shells read as dense short fur.
 ///
-/// Add to any MeshRenderer object (the Squirrel and Squirrel_Tail meshes from the FBX).
+/// Add to any MeshRenderer object (the Squirrel and Squirrel_Tail meshes from the FBX),
+/// or to a SkinnedMeshRenderer (the rigged fox). For a skinned mesh every shell is itself
+/// a SkinnedMeshRenderer sharing the same bones, so the fur bends with the animation.
 /// Shells are generated as hidden children and are never saved into the scene.
 /// </summary>
 [ExecuteAlways]
-[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class ShellFur : MonoBehaviour
 {
     [Header("Shape")]
@@ -30,6 +31,9 @@ public class ShellFur : MonoBehaviour
     [Tooltip("Skip fur where the albedo is darker than this (keeps eyes and nose bare).")]
     [Range(0f, 0.5f)] public float bareBelow = 0.07f;
     public Color tint = Color.white;
+    [Tooltip("Scale fur length per vertex by the mesh's vertex colour (red). The fox and " +
+             "hare carry a mask for short fur on the face and ears; leave off for meshes without one.")]
+    public bool lengthFromVertexColor = false;
     [Tooltip("Leave empty to reuse the renderer's own albedo texture.")]
     public Texture albedoOverride;
     [Tooltip("Leave empty to auto-pick the Built-in or URP fur shader.")]
@@ -59,7 +63,10 @@ public class ShellFur : MonoBehaviour
 
         var mf = GetComponent<MeshFilter>();
         var mr = GetComponent<MeshRenderer>();
-        if (mf.sharedMesh == null) return;
+        var skin = GetComponent<SkinnedMeshRenderer>();
+        Mesh mesh = skin != null ? skin.sharedMesh : mf != null ? mf.sharedMesh : null;
+        Renderer source = skin != null ? (Renderer)skin : mr;
+        if (mesh == null || source == null) return;
 
         Shader shader = shaderOverride != null ? shaderOverride : FindFurShader();
         if (shader == null)
@@ -69,7 +76,7 @@ public class ShellFur : MonoBehaviour
         }
 
         Texture albedo = albedoOverride;
-        if (albedo == null && mr.sharedMaterial != null) albedo = mr.sharedMaterial.mainTexture;
+        if (albedo == null && source.sharedMaterial != null) albedo = source.sharedMaterial.mainTexture;
 
         _materials = new Material[shellCount];
         for (int i = 0; i < shellCount; i++)
@@ -85,12 +92,29 @@ public class ShellFur : MonoBehaviour
             mat.SetFloat("_BareBelow", bareBelow);
             mat.SetFloat("_ShellIndex", i);
             mat.SetFloat("_ShellCount", shellCount);
+            mat.SetFloat("_UseLengthMask", lengthFromVertexColor ? 1f : 0f);
             _materials[i] = mat;
 
             var go = new GameObject(ShellPrefix + i) { hideFlags = HideFlags.HideAndDontSave };
             go.transform.SetParent(transform, false);
-            go.AddComponent<MeshFilter>().sharedMesh = mf.sharedMesh;
-            var r = go.AddComponent<MeshRenderer>();
+            Renderer r;
+            if (skin != null)
+            {
+                // Same bones as the base mesh, so every shell deforms in lockstep with it
+                var s = go.AddComponent<SkinnedMeshRenderer>();
+                s.sharedMesh = mesh;
+                s.bones = skin.bones;
+                s.rootBone = skin.rootBone;
+                s.localBounds = skin.localBounds;
+                s.updateWhenOffscreen = skin.updateWhenOffscreen;
+                s.quality = skin.quality;
+                r = s;
+            }
+            else
+            {
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                r = go.AddComponent<MeshRenderer>();
+            }
             r.sharedMaterial = mat;
             r.shadowCastingMode = ShadowCastingMode.Off;   // the base mesh already casts the shadow
             r.receiveShadows = true;

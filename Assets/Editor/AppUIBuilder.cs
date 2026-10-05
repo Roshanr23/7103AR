@@ -2,6 +2,9 @@ using System;
 using System.IO;
 using System.Linq;
 using AR7103.App;
+using AR7103.Hands;
+using UnityEditor.Events;
+using UnityEditor.Animations;
 using AR7103.UI;
 using TMPro;
 using UnityEditor;
@@ -64,20 +67,23 @@ namespace AR7103.EditorTools
         static readonly Species[] Animals =
         {
             new Species("squirrel", "Red Squirrel",      "Tamiasciurus hudsonicus", 0.72f, AppScenes.Squirrel, "ImageTargetSquirrel"),
-            new Species("fox",      "Red Fox",           "Vulpes vulpes",           0.42f),
+            new Species("fox",      "Red Fox",           "Vulpes vulpes",           0.42f, AppScenes.Fox,      "ImageTargetFox"),
             new Species("deer",     "White-tailed Deer", "Odocoileus virginianus",  0.50f, AppScenes.Deer,     "ImageTargetDeer"),
-            new Species("hare",     "Snowshoe Hare",     "Lepus americanus",        0.45f),
+            new Species("hare",     "Arctic Hare",       "Lepus arcticus",          0.45f, AppScenes.Hare,     "ImageTargetHare"),
             new Species("owl",      "Snowy Owl",         "Bubo scandiacus",         0.55f, AppScenes.Owl,      "ImageTargetOwl"),
         };
 
         static TMP_FontAsset _font;
         static Sprite _round, _stroke, _shadow, _gradUp, _circle, _ringThin, _ringThick, _blob;
+        static Sprite _palmIcon, _soundOn, _soundOff, _closeIcon;
+        static Sprite _fistIcon, _pinchIcon, _pointIcon, _peaceIcon, _starOn, _starOff, _playIcon;
 
         // ================================================================ entry
         [MenuItem("7103AR/Build App UI")]
         public static void BuildAll()
         {
             Prepare();
+            ConfigureAudioImports();
             SplitIntoScenes();
             foreach (var a in Animals.Where(a => a.inAR)) BuildAnimalScene(a);
             BuildEntryScene();
@@ -155,8 +161,24 @@ namespace AR7103.EditorTools
 
         // Metres tall on the floor, and the turn needed so each model's face points
         // at the camera (found by rendering, not assumed from the FBX axes).
-        static float SpawnHeight(string file) => file switch { "squirrel" => 0.30f, "deer" => 1.0f, "owl" => 0.6f, _ => 0.5f };
-        static float SpawnYaw(string file) => file switch { _ => 0f };
+        // Life size: a red squirrel sitting up with its tail raised, a red fox to the ear
+        // tips, a young white-tailed doe (about 0.9 m at the shoulder), an arctic hare
+        // sitting up, a standing snowy owl.
+        static float SpawnHeight(string file) => file switch { "squirrel" => 0.30f, "deer" => 1.4f, "owl" => 0.6f, "fox" => 0.62f, "hare" => 0.45f, _ => 0.5f };
+        // The fox walks toward -X in Blender, which the FBX conversion turns into +X,
+        // so its nose is 90 deg off the +Z the others face. (Confirmed by render.)
+        // The hare's nose sits ~33 deg off +Z (its Blender heading was -56.9 deg). Confirmed by render.
+        static float SpawnYaw(string file) => file switch { "fox" => -90f, "hare" => 33f, _ => 0f };
+
+        // Models that are not in SampleScene, and the Vuforia trackable their page uses
+        const string FoxFbx = "Assets/fox_export/RedFox.fbx";
+        const string FoxController = "Assets/fox_export/RedFox.controller";
+        const string HareFbx = "Assets/hare_export/ArcticHare.fbx";
+        const string HareController = "Assets/hare_export/ArcticHare.controller";
+        const string HareGroundFbx = "Assets/hare_export/HareGround.fbx";
+        const string HareTravel = "Assets/hare_export/hare_travel.json";
+        static string ModelPath(string file) => file switch { "fox" => FoxFbx, "hare" => HareFbx, _ => null };
+        static string Trackable(string file) => file switch { "fox" => "fox", "hare" => "hare", _ => null };
         static readonly string[] HiddenOnFloor = { "Environment", "Tree" };
 
         const float SquirrelTailLift = 155f;
@@ -190,12 +212,15 @@ namespace AR7103.EditorTools
         /// <summary>Render each animal spawned on a test floor, viewed from the front.</summary>
         public static void PreviewSpawn()
         {
+            Prepare();       // imports/configures the fox and hare before they are instantiated
             string outDir = Environment.GetEnvironmentVariable("APPUI_CAPTURE_DIR") ?? "Temp/AppUICapture";
             Directory.CreateDirectory(outDir);
             foreach (var (file, path) in new[] {
                 ("squirrel", "Assets/squirrel_export/SquirrelScene.fbx"),
                 ("deer",     "Assets/deer_export/WhiteTailedDeer.fbx"),
-                ("owl",      "Assets/owl_export/SnowyOwl.fbx") })
+                ("owl",      "Assets/owl_export/SnowyOwl.fbx"),
+                ("fox",      FoxFbx),
+                ("hare",     HareFbx) })
             {
                 EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
                 var light = new GameObject("Sun").AddComponent<Light>();
@@ -274,7 +299,9 @@ namespace AR7103.EditorTools
                 spawn.Spawn(stage.transform, cam, instant: true);
                 var b = spawn.MeshBounds();
                 Vector3 toCam = Vector3.ProjectOnPlane(cam.transform.position - spawn.transform.position, Vector3.up).normalized;
-                float facing = Vector3.Dot(spawn.transform.forward, toCam);
+                // the model's nose, not its +Z: the fox's nose is +X, turned by faceYaw
+                Vector3 nose = spawn.transform.rotation * Quaternion.Euler(0f, -spawn.faceYaw, 0f) * Vector3.forward;
+                float facing = Vector3.Dot(nose, toCam);
                 Debug.Log($"{tag} height = {b.size.y:F3} m (want {spawn.targetHeight}); feet gap to floor = {(b.min.y - stage.transform.position.y) * 1000f:F1} mm; " +
                           $"faces camera = {facing:F3} (1 = straight at it)");
             }
@@ -295,6 +322,180 @@ namespace AR7103.EditorTools
             Debug.Log($"[Owl] AnimatorControllers in project: {(ctrls.Length == 0 ? "none" : string.Join(", ", ctrls))}");
             foreach (Transform t in owl.GetComponentsInChildren<Transform>(true))
                 if (t.name.StartsWith("Ctrl_")) Debug.Log($"[Owl]   {t.name,-16} parent={t.parent.name,-14} localRot={t.localEulerAngles}");
+        }
+
+        /// <summary>Debug the fox's skinned-mesh measurement at identity.</summary>
+        public static void ReportFoxScale()
+        {
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            var fox = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(FoxFbx));
+            var mi = (ModelImporter)AssetImporter.GetAtPath(FoxFbx);
+            Debug.Log($"[FoxScale] importer globalScale={mi.globalScale} useFileScale={mi.useFileScale} fileScale={mi.fileScale}");
+            foreach (var t in fox.GetComponentsInChildren<Transform>(true).Take(6))
+                Debug.Log($"[FoxScale]   {t.name,-14} localScale={t.localScale} lossy={t.lossyScale} localPos={t.localPosition}");
+            foreach (var smr in fox.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                var m1 = new Mesh(); smr.BakeMesh(m1, true); m1.RecalculateBounds();
+                var m0 = new Mesh(); smr.BakeMesh(m0, false); m0.RecalculateBounds();
+                Debug.Log($"[FoxScale] {smr.name}: sharedMesh bounds={smr.sharedMesh.bounds.size} renderer.bounds={smr.bounds.size} " +
+                          $"bake(useScale)={m1.bounds.size} bake(noScale)={m0.bounds.size} smrLossy={smr.transform.lossyScale} rootBone={(smr.rootBone ? smr.rootBone.name + " lossy " + smr.rootBone.lossyScale : "none")}");
+            }
+        }
+
+        /// <summary>Render AR_Fox for real: fur shells, snow patch, snowfall, walk poses.</summary>
+        public static void CaptureFox()
+        {
+            string outDir = Environment.GetEnvironmentVariable("APPUI_CAPTURE_DIR") ?? "Temp/AppUICapture";
+            Directory.CreateDirectory(outDir);
+            var scene = EditorSceneManager.OpenScene(ScenePath(AppScenes.Fox), OpenSceneMode.Single);
+            var stage = GameObject.Find("Ground Plane Stage").transform;
+            var spawn = stage.GetComponentInChildren<GroundSpawn>(true);
+            var walk = spawn.GetComponent<FoxWalk>();
+            walk.enabled = false;                                     // posed by hand below
+            var clip = AssetDatabase.LoadAllAssetsAtPath(FoxFbx).OfType<AnimationClip>().First(c => !c.name.StartsWith("__preview"));
+
+            var light = new GameObject("CapSun").AddComponent<Light>();
+            light.type = LightType.Directional; light.intensity = 1.25f; light.shadows = LightShadows.Soft;
+            light.transform.rotation = Quaternion.Euler(52f, -35f, 0f);
+            RenderSettings.ambientLight = new Color(0.58f, 0.6f, 0.64f);
+            var floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            floor.transform.position = new Vector3(0f, -0.001f, 0f);
+            var floorMat = new Material(Shader.Find("Universal Render Pipeline/Lit")) { color = new Color(0.45f, 0.4f, 0.36f) };
+            floor.GetComponent<Renderer>().sharedMaterial = floorMat;     // a wooden floor for the snow to sit on
+            stage.position = Vector3.zero; stage.rotation = Quaternion.identity;
+
+            var cam = new GameObject("CapCam").AddComponent<Camera>();
+            cam.fieldOfView = 55f;
+            cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = new Color(0.78f, 0.8f, 0.83f);
+            cam.transform.position = new Vector3(0.9f, 1.05f, 1.45f);
+            cam.transform.LookAt(new Vector3(0f, 0.18f, 0f));
+            spawn.Spawn(stage, cam, instant: true);
+
+            var fall = stage.Find("FoxSnowfall")?.GetComponent<ParticleSystem>();
+            if (fall != null) { fall.Simulate(6f, true, true); }
+
+            var rt = new RenderTexture(900, 900, 24);
+            cam.targetTexture = rt;
+            float y0 = spawn.transform.localPosition.y;
+            foreach (var (label, frac, ang) in new[] { ("side_a", 0.0f, 90f), ("side_b", 0.5f, 90f), ("away", 0.25f, 20f) })
+            {
+                // put the fox on its circle, heading along it, at this point of the stride
+                float a = ang * Mathf.Deg2Rad;
+                spawn.transform.localPosition = new Vector3(Mathf.Cos(a) * walk.radius, y0, Mathf.Sin(a) * walk.radius);
+                Vector3 tangent = new Vector3(-Mathf.Sin(a), 0f, Mathf.Cos(a));
+                spawn.transform.localRotation = Quaternion.LookRotation(tangent) * Quaternion.Euler(0f, spawn.faceYaw, 0f);
+                clip.SampleAnimation(spawn.gameObject, clip.length * frac);
+                foreach (var f in spawn.GetComponentsInChildren<ShellFur>(true)) f.Rebuild();
+                var b = spawn.MeshBounds();
+                Debug.Log($"[Fox] {label}: fox height {b.size.y:F2} m, lowest paw {b.min.y * 1000f:F1} mm vs floor");
+                cam.Render();
+                RenderTexture.active = rt;
+                var tex = new Texture2D(900, 900, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, 900, 900), 0, 0); tex.Apply();
+                RenderTexture.active = null;
+                File.WriteAllBytes(Path.Combine(outDir, $"fox_{label}.png"), tex.EncodeToPNG());
+            }
+        }
+
+        /// <summary>Render AR_Hare for real: fur, soil, bark chips, and moments from its hop.</summary>
+        public static void CaptureHare()
+        {
+            string outDir = Environment.GetEnvironmentVariable("APPUI_CAPTURE_DIR") ?? "Temp/AppUICapture";
+            Directory.CreateDirectory(outDir);
+            EditorSceneManager.OpenScene(ScenePath(AppScenes.Hare), OpenSceneMode.Single);
+            var stage = GameObject.Find("Ground Plane Stage").transform;
+            var spawn = stage.GetComponentInChildren<GroundSpawn>(true);
+            var hop = spawn.GetComponent<HareHop>();
+            var clip = AssetDatabase.LoadAllAssetsAtPath(HareFbx).OfType<AnimationClip>().First(c => !c.name.StartsWith("__preview"));
+
+            var light = new GameObject("CapSun").AddComponent<Light>();
+            light.type = LightType.Directional; light.intensity = 1.2f; light.shadows = LightShadows.Soft;
+            light.transform.rotation = Quaternion.Euler(50f, -40f, 0f);
+            RenderSettings.ambientLight = new Color(0.6f, 0.62f, 0.66f);
+            var floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            floor.transform.position = new Vector3(0f, -0.002f, 0f);
+            floor.GetComponent<Renderer>().sharedMaterial =
+                new Material(Shader.Find("Universal Render Pipeline/Lit")) { color = new Color(0.62f, 0.6f, 0.57f) };
+            stage.position = Vector3.zero; stage.rotation = Quaternion.identity;
+
+            var cam = new GameObject("CapCam").AddComponent<Camera>();
+            cam.fieldOfView = 50f;
+            cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = new Color(0.8f, 0.82f, 0.85f);
+            cam.transform.position = new Vector3(0.7f, 0.75f, 1.05f);
+            cam.transform.LookAt(new Vector3(0f, 0.12f, 0f));
+            spawn.Spawn(stage, cam, instant: true);
+            spawn.enabled = false;
+
+            var rt = new RenderTexture(900, 900, 24);
+            cam.targetTexture = rt;
+            int frames = hop.metres.Length;
+            hop.Step(hop.DistanceAt(0f));                                   // initialise on the spot
+            // a sitting moment, mid-air in the first hop, and landing after the third
+            foreach (var (label, frame) in new[] { ("sit", 10), ("airborne", 36), ("landed", 112) })
+            {
+                float nt = frame / (float)(frames - 1);
+                clip.SampleAnimation(spawn.gameObject, clip.length * nt);
+                hop.Step(hop.DistanceAt(nt));
+                foreach (var f in spawn.GetComponentsInChildren<ShellFur>(true)) f.Rebuild();
+                var b = spawn.MeshBounds();
+                Vector3 lp = spawn.transform.localPosition;
+                Debug.Log($"[Hare] {label,-9} frame {frame}: travelled {hop.DistanceAt(nt) * spawn.transform.localScale.x:F2} m, " +
+                          $"{Mathf.Sqrt(lp.x * lp.x + lp.z * lp.z):F2} m from the spot, lowest point {b.min.y * 1000f:F0} mm off the floor");
+                cam.Render();
+                RenderTexture.active = rt;
+                var tex = new Texture2D(900, 900, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, 900, 900), 0, 0); tex.Apply();
+                RenderTexture.active = null;
+                File.WriteAllBytes(Path.Combine(outDir, $"hare_{label}.png"), tex.EncodeToPNG());
+            }
+        }
+
+        /// <summary>Face close-ups of the fox and hare with the fur-length mask off, then on.</summary>
+        public static void CaptureFaceFur()
+        {
+            string outDir = Environment.GetEnvironmentVariable("APPUI_CAPTURE_DIR") ?? "Temp/AppUICapture";
+            Directory.CreateDirectory(outDir);
+            foreach (var (sceneName, fbx, eye) in new[] { (AppScenes.Fox, FoxFbx, 0.42f), (AppScenes.Hare, HareFbx, 0.30f) })
+            {
+                EditorSceneManager.OpenScene(ScenePath(sceneName), OpenSceneMode.Single);
+                var stage = GameObject.Find("Ground Plane Stage").transform;
+                var spawn = stage.GetComponentInChildren<GroundSpawn>(true);
+                var light = new GameObject("CapSun").AddComponent<Light>();
+                light.type = LightType.Directional; light.intensity = 1.25f;
+                light.transform.rotation = Quaternion.Euler(40f, -30f, 0f);
+                RenderSettings.ambientLight = new Color(0.6f, 0.62f, 0.66f);
+                stage.position = Vector3.zero; stage.rotation = Quaternion.identity;
+                var cam = new GameObject("CapCam").AddComponent<Camera>();
+                cam.fieldOfView = 34f;
+                cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = new Color(0.78f, 0.8f, 0.83f);
+                cam.transform.position = new Vector3(0.25f, eye + 0.05f, 0.9f);
+                spawn.Spawn(stage, cam, instant: true);
+                var b = spawn.MeshBounds();
+                // aim at the face: the top-front of the animal, which faces the camera
+                Vector3 face = new Vector3(b.center.x, b.min.y + b.size.y * 0.68f, b.center.z) +
+                               (cam.transform.position - b.center).normalized * b.size.z * 0.3f;
+                cam.transform.LookAt(face);
+
+                var furComp = spawn.GetComponentsInChildren<ShellFur>(true).First();
+                var mesh = furComp.GetComponent<SkinnedMeshRenderer>().sharedMesh;
+                var cols = mesh.colors;
+                Debug.Log($"[Face] {sceneName}: mesh vertex colours {cols.Length}/{mesh.vertexCount}, " +
+                          $"mask red {(cols.Length > 0 ? cols.Min(c => c.r) : -1):F2}..{(cols.Length > 0 ? cols.Max(c => c.r) : -1):F2}");
+
+                var rt = new RenderTexture(700, 700, 24);
+                cam.targetTexture = rt;
+                foreach (var (label, on) in new[] { ("before", false), ("after", true) })
+                {
+                    furComp.lengthFromVertexColor = on;
+                    furComp.Rebuild();
+                    cam.Render();
+                    RenderTexture.active = rt;
+                    var tex = new Texture2D(700, 700, TextureFormat.RGB24, false);
+                    tex.ReadPixels(new Rect(0, 0, 700, 700), 0, 0); tex.Apply();
+                    RenderTexture.active = null;
+                    File.WriteAllBytes(Path.Combine(outDir, $"face_{sceneName}_{label}.png"), tex.EncodeToPNG());
+                }
+            }
         }
 
         // ------------------------------------------------------- scene split
@@ -359,13 +560,78 @@ namespace AR7103.EditorTools
                 return t * t * (3f - 2f * t);
             }, Vector4.zero);
 
+            BakeIcons();
+
             foreach (var a in Animals)
             {
                 ConfigureSprite($"{AnimalDir}/{a.file}.png", 1024, mip: true);
                 ConfigureSprite($"{AnimalDir}/Backdrops/{a.file}_blur.png", 256, mip: false);
             }
             AssetDatabase.Refresh();
+            ConfigureRiggedImport(FoxFbx, FoxController, "Walk",
+                ("FoxFace", 0.3f), ("FoxFur", 0.08f), ("FoxWhiskers", 0.2f));
+            ConfigureRiggedImport(HareFbx, HareController, "Hop",
+                ("HareFace", 0.35f), ("HareFur", 0.08f), ("HareWhiskers", 0.2f));
+            ConfigureStaticImport(HareGroundFbx, ("HareGround", 0.05f));
         }
+
+        /// <summary>
+        /// Generic rig, the one gait clip set to loop, external materials; plus an
+        /// AnimatorController that just plays it. The clip is a single in-place
+        /// 48-frame loop cut on export at its cleanest seam.
+        /// </summary>
+        static void ConfigureRiggedImport(string fbx, string controller, string clipName,
+                                          params (string mat, float smooth)[] materials)
+        {
+            var mi = AssetImporter.GetAtPath(fbx) as ModelImporter;
+            if (mi == null) { Debug.LogWarning("[AppUI] model not found at " + fbx); return; }
+            mi.animationType = ModelImporterAnimationType.Generic;
+            mi.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
+            mi.importAnimation = true;
+            mi.materialLocation = ModelImporterMaterialLocation.External;
+            mi.materialName = ModelImporterMaterialName.BasedOnMaterialName;
+            mi.materialSearch = ModelImporterMaterialSearch.Local;
+            var clips = mi.defaultClipAnimations;
+            foreach (var c in clips) { c.name = clipName; c.loopTime = true; c.loopPose = false; }
+            mi.clipAnimations = clips;
+            mi.SaveAndReimport();
+
+            var clip = AssetDatabase.LoadAllAssetsAtPath(fbx).OfType<AnimationClip>()
+                .FirstOrDefault(c => !c.name.StartsWith("__preview"));
+            if (clip == null) { Debug.LogWarning("[AppUI] no animation clip in " + fbx); return; }
+            if (AssetDatabase.LoadAssetAtPath<AnimatorController>(controller) == null)
+                AnimatorController.CreateAnimatorControllerAtPathWithClip(controller, clip);
+            SetSmoothness(fbx, materials);
+            Debug.Log($"[AppUI] {Path.GetFileNameWithoutExtension(fbx)} import: Generic rig, clip '{clip.name}' {clip.length:F2}s looping={clip.isLooping}");
+        }
+
+        static void ConfigureStaticImport(string fbx, params (string mat, float smooth)[] materials)
+        {
+            var mi = AssetImporter.GetAtPath(fbx) as ModelImporter;
+            if (mi == null) { Debug.LogWarning("[AppUI] model not found at " + fbx); return; }
+            mi.animationType = ModelImporterAnimationType.None;
+            mi.importAnimation = false;
+            mi.materialLocation = ModelImporterMaterialLocation.External;
+            mi.materialName = ModelImporterMaterialName.BasedOnMaterialName;
+            mi.materialSearch = ModelImporterMaterialSearch.Local;
+            mi.SaveAndReimport();
+            SetSmoothness(fbx, materials);
+        }
+
+        static void SetSmoothness(string fbx, (string mat, float smooth)[] materials)
+        {
+            string dir = Path.GetDirectoryName(fbx).Replace('\\', '/');
+            foreach (var (mat, smooth) in materials)
+            {
+                var m = AssetDatabase.LoadAssetAtPath<Material>($"{dir}/Materials/{mat}.mat");
+                if (m == null) { Debug.LogWarning("[AppUI] material not found: " + mat); continue; }
+                m.SetFloat("_Smoothness", smooth);
+                m.SetFloat("_Glossiness", smooth);
+                EditorUtility.SetDirty(m);
+            }
+        }
+
+
 
         // ------------------------------------------------------------ EntryScene
         static void BuildEntryScene()
@@ -584,7 +850,8 @@ namespace AR7103.EditorTools
         /// <summary>Build ScanUI into the active scene, replacing any previous one.</summary>
         static void BuildScanUI(bool includeBack, GroundSpawn spawn, bool returnToMenu,
                                 string lockedTitle, string lockedSubtitle,
-                                ObserverBehaviour trigger = null, string pageSubtitle = null)
+                                ObserverBehaviour trigger = null, string pageSubtitle = null,
+                                Sprite pagePhoto = null, string pageCaption = null)
         {
             var scene = SceneManager.GetActiveScene();
             foreach (var old in scene.GetRootGameObjects().Where(g => g.name == "ScanUI"))
@@ -659,6 +926,38 @@ namespace AR7103.EditorTools
             var reticleGroup = reticle.gameObject.AddComponent<CanvasGroup>();
             reticleGroup.blocksRaycasts = false;
 
+            // the page step: where the reticle was, a picture of what to look for
+            CanvasGroup pageHintGroup = null;
+            if (pagePhoto != null)
+            {
+                var hint = Node("PageHint", safe);
+                hint.anchorMin = hint.anchorMax = hint.pivot = new Vector2(0.5f, 0.5f);
+                hint.sizeDelta = new Vector2(640f, 470f);
+                var hs = Img(Node("Shadow", hint), _shadow, WithA(Night, 0.55f), sliced: true);
+                Anchor(hs.rectTransform, 0, 0, 1, 1);
+                hs.rectTransform.offsetMin = new Vector2(-56f, -80f);
+                hs.rectTransform.offsetMax = new Vector2(56f, 40f);
+                var hm = Img(Stretch(Node("Mask", hint)), _round, Color.white, sliced: true, ppu: 1.8f);
+                hm.gameObject.AddComponent<Mask>().showMaskGraphic = false;
+                var hp = Img(Node("Photo", hm.rectTransform), pagePhoto, Color.white);
+                hp.gameObject.AddComponent<CoverImage>().focus = new Vector2(0.5f, 0.5f);
+                var hsc = Img(Node("Scrim", hm.rectTransform), _gradUp, WithA(Night, 0.85f));
+                Anchor(hsc.rectTransform, 0, 0, 1, 0.55f);
+                var words = Node("Words", hm.rectTransform);
+                words.anchorMin = new Vector2(0f, 0f); words.anchorMax = new Vector2(1f, 0f); words.pivot = new Vector2(0f, 0f);
+                words.offsetMin = new Vector2(40f, 30f); words.offsetMax = new Vector2(-40f, 150f);
+                var wv = words.gameObject.AddComponent<VerticalLayoutGroup>();
+                wv.childAlignment = TextAnchor.LowerLeft; wv.spacing = 2f;
+                wv.childControlWidth = wv.childControlHeight = true;
+                wv.childForceExpandWidth = true; wv.childForceExpandHeight = false;
+                Text(words, "Name", pageCaption ?? "", 46, Snow, FontStyles.Bold);
+                Text(words, "Hint", "Find this page in your book", 30, WithA(Snow, 0.8f), FontStyles.Normal);
+                var rim = Img(Stretch(Node("Rim", hint)), _stroke, WithA(Snow, 0.85f), sliced: true, ppu: 1.8f);
+                foreach (var g in hint.GetComponentsInChildren<Graphic>()) g.raycastTarget = false;
+                pageHintGroup = hint.gameObject.AddComponent<CanvasGroup>();
+                pageHintGroup.alpha = 0f; pageHintGroup.blocksRaycasts = false;
+            }
+
             // status chip
             var chip = Node("Status", safe);
             chip.anchorMin = chip.anchorMax = chip.pivot = new Vector2(0.5f, 0f);
@@ -704,6 +1003,7 @@ namespace AR7103.EditorTools
             flow.lockedSubtitle = lockedSubtitle;
             flow.reticleGroup = reticleGroup;
             flow.trigger = trigger;
+            flow.pageHint = pageHintGroup;
             if (pageSubtitle != null) flow.pageSubtitle = pageSubtitle;
         }
 
@@ -721,12 +1021,29 @@ namespace AR7103.EditorTools
             {
                 var src = EditorSceneManager.OpenScene(ARPath, OpenSceneMode.Additive);
                 var original = src.GetRootGameObjects().FirstOrDefault(g => g.name == a.target);
+                string retarget = null;
+                if (original == null && Trackable(a.file) != null)
+                {
+                    // No such target in SampleScene (the fox): clone another page and
+                    // point it at this animal's trackable in the same database.
+                    original = src.GetRootGameObjects().First(g => g.name == "ImageTargetDeer");
+                    retarget = Trackable(a.file);
+                }
                 if (original == null) throw new Exception("SampleScene has no " + a.target + " to restore");
                 existing = UnityEngine.Object.Instantiate(original);
                 existing.name = a.target;
                 SceneManager.MoveGameObjectToScene(existing, scene);
                 EditorSceneManager.CloseScene(src, true);
-                Debug.Log($"[AppUI] {a.arScene}: restored {a.target} as the page trigger");
+                if (retarget != null)
+                {
+                    var so = new SerializedObject(existing.GetComponent<ImageTargetBehaviour>());
+                    var name = so.FindProperty("mTrackableName");
+                    if (name == null) throw new Exception("ImageTargetBehaviour has no mTrackableName field");
+                    name.stringValue = retarget;
+                    so.ApplyModifiedPropertiesWithoutUndo();
+                    Debug.Log($"[AppUI] {a.arScene}: new page trigger {a.target} -> trackable '{retarget}'");
+                }
+                else Debug.Log($"[AppUI] {a.arScene}: restored {a.target} as the page trigger");
             }
             // a trigger carries nothing: anything left under it would appear on the page
             for (int i = existing.transform.childCount - 1; i >= 0; i--)
@@ -772,10 +1089,15 @@ namespace AR7103.EditorTools
             if (spawn == null)
             {
                 var target = GameObject.Find(a.target);
-                if (target == null) throw new Exception($"{a.arScene}: no {a.target} and no model on the stage");
-                GameObject model = target.transform.Cast<Transform>()
+                GameObject model = target == null ? null : target.transform.Cast<Transform>()
                     .Select(t => t.gameObject)
                     .FirstOrDefault(PrefabUtility.IsAnyPrefabInstanceRoot);
+                if (model == null && ModelPath(a.file) != null)
+                {
+                    var asset = AssetDatabase.LoadAssetAtPath<GameObject>(ModelPath(a.file));
+                    if (asset == null) throw new Exception($"{a.arScene}: missing model {ModelPath(a.file)}");
+                    model = (GameObject)PrefabUtility.InstantiatePrefab(asset, scene);
+                }
                 if (model == null) throw new Exception($"{a.arScene}: no model prefab under {a.target}");
 
                 // off the image target, onto the ground, back to its natural upright pose
@@ -793,6 +1115,17 @@ namespace AR7103.EditorTools
             }
             ObserverBehaviour page = EnsureImageTarget(scene, a);
             if (a.file == "owl") SetupOwlFlight(spawn.gameObject, stage);
+            if (a.file == "fox") SetupFox(spawn, stage, scene);
+            if (a.file == "hare") SetupHare(spawn, stage, scene);
+            if (a.file == "squirrel" && spawn.GetComponent<SquirrelPalm>() == null) spawn.gameObject.AddComponent<SquirrelPalm>();
+            if (a.file == "deer") SetupDeerPalm(spawn);
+            var palm = spawn.GetComponent<PalmReaction>();
+            if (palm != null) WirePalm(palm, a.arScene);
+            SetupAudio(a, spawn);
+            // the deer was first placed fawn-sized; bring an untouched one up to life size
+            if (a.file == "deer" && Mathf.Approximately(spawn.targetHeight, 1.0f)) spawn.targetHeight = SpawnHeight("deer");
+            SetupGrounding(a, spawn, stage);
+            SetupTricksAndGame(a, spawn);
             // hidden until the floor locks, then GroundSpawn places and reveals it
             spawn.gameObject.SetActive(false);
 
@@ -800,7 +1133,9 @@ namespace AR7103.EditorTools
                         lockedTitle: "Found it",
                         lockedSubtitle: $"Placing the {a.common.ToLowerInvariant()} on your floor.",
                         trigger: page,
-                        pageSubtitle: $"Point your camera at the {a.common.ToLowerInvariant()} page in your book.");
+                        pageSubtitle: $"Point your camera at the {a.common.ToLowerInvariant()} page in your book.",
+                        pagePhoto: AssetDatabase.LoadAssetAtPath<Sprite>($"{AnimalDir}/{a.file}.png"),
+                        pageCaption: a.common);
             BuildARHud(a);
 
             EditorSceneManager.MarkSceneDirty(scene);
@@ -873,6 +1208,382 @@ namespace AR7103.EditorTools
             sr.color = new Color(0f, 0f, 0f, flight.shadowAlpha);
             sh.SetActive(false);
             flight.shadow = sr;
+            WireOwlGestures(flight);
+        }
+
+        /// <summary>
+        /// Open palm calls the owl over. Wired as persistent listeners on the
+        /// HandGestureManager's events, so the link shows in its Inspector
+        /// ("On Gesture Began -> OwlFlight.OnGestureBegan") and can be rewired there.
+        /// Idempotent: listeners pointing at this OwlFlight are removed first.
+        /// </summary>
+        static void WireOwlGestures(OwlFlight flight)
+        {
+            var gm = UnityEngine.Object.FindFirstObjectByType<HandGestureManager>(FindObjectsInactive.Include);
+            if (gm == null) { Debug.LogWarning("[AppUI] AR_Owl has no HandGestureManager; open palm will do nothing"); return; }
+
+            void Clear(UnityEngine.Events.UnityEventBase ev)
+            {
+                for (int i = ev.GetPersistentEventCount() - 1; i >= 0; i--)
+                    if (ev.GetPersistentTarget(i) == flight) UnityEventTools.RemovePersistentListener(ev, i);
+            }
+            Clear(gm.onGestureBegan); Clear(gm.onGestureEnded); Clear(gm.onHandLost);
+
+            UnityEventTools.AddPersistentListener(gm.onGestureBegan, flight.OnGestureBegan);
+            UnityEventTools.AddPersistentListener(gm.onGestureEnded, flight.OnGestureEnded);
+            UnityEventTools.AddPersistentListener(gm.onHandLost, flight.OnHandLost);
+            EditorUtility.SetDirty(gm);
+            Debug.Log("[AppUI] AR_Owl: open palm -> owl comes to you (wired on HandGestureManager)");
+        }
+
+        /// <summary>
+        /// Open palm -> the animal's PalmReaction (squirrel, fox, deer, hare), wired
+        /// like the owl: persistent listeners on HandGestureManager, visible and
+        /// re-wirable in its Inspector. Idempotent.
+        /// </summary>
+        static void WirePalm(PalmReaction palm, string sceneName)
+        {
+            var gm = UnityEngine.Object.FindFirstObjectByType<HandGestureManager>(FindObjectsInactive.Include);
+            if (gm == null) { Debug.LogWarning($"[AppUI] {sceneName} has no HandGestureManager; open palm will do nothing"); return; }
+
+            void Clear(UnityEngine.Events.UnityEventBase ev)
+            {
+                for (int i = ev.GetPersistentEventCount() - 1; i >= 0; i--)
+                    if (ev.GetPersistentTarget(i) is PalmReaction) UnityEventTools.RemovePersistentListener(ev, i);
+            }
+            Clear(gm.onGestureBegan); Clear(gm.onGestureEnded); Clear(gm.onHandLost);
+
+            UnityEventTools.AddPersistentListener(gm.onGestureBegan, palm.OnGestureBegan);
+            UnityEventTools.AddPersistentListener(gm.onGestureEnded, palm.OnGestureEnded);
+            UnityEventTools.AddPersistentListener(gm.onHandLost, palm.OnHandLost);
+            EditorUtility.SetDirty(gm);
+            Debug.Log($"[AppUI] {sceneName}: open palm -> {palm.GetType().Name} (wired on HandGestureManager)");
+        }
+
+        // ------------------------------------------------- tricks and minigames
+        static Material LitMaterial(string name, Color c, float smooth)
+        {
+            string path = $"{GenDir}/{name}.mat";
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (mat == null) { mat = new Material(Shader.Find("Universal Render Pipeline/Lit")); AssetDatabase.CreateAsset(mat, path); }
+            mat.SetColor("_BaseColor", c);
+            mat.SetFloat("_Smoothness", smooth);
+            EditorUtility.SetDirty(mat);
+            return mat;
+        }
+
+        static T[] Clips<T>(params string[] names) where T : UnityEngine.Object => names.Select(n => Clip(n) as T).ToArray();
+
+        /// <summary>
+        /// The gesture tricks (AnimalTricks) and the animal's minigame. Re-run safe:
+        /// components are reused and their settings rewritten.
+        /// </summary>
+        static void SetupTricksAndGame(Species a, GroundSpawn spawn)
+        {
+            var go = spawn.gameObject;
+            Transform Bone(string n) => go.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == n);
+            var tricks = GetOrAdd<AnimalTricks>(go);
+            tricks.specialName = SpecialName(a.file);
+            tricks.pausesRoutine = a.file != "owl";
+            (tricks.special, tricks.head) = a.file switch
+            {
+                "squirrel" => (AnimalTricks.Special.Spin, (Transform)null),
+                "fox" => (AnimalTricks.Special.Pounce, Bone("head")),
+                "deer" => (AnimalTricks.Special.Leap, Bone("Ctrl_Head")),
+                "hare" => (AnimalTricks.Special.Binky, Bone("head")),
+                _ => (AnimalTricks.Special.HeadTurn, Bone("Ctrl_Head")),
+            };
+            EditorUtility.SetDirty(tricks);
+
+            var snow = LitMaterial("GameSnow", new Color(0.95f, 0.97f, 1f), 0.25f);
+            foreach (var old in go.GetComponents<MiniGame>()) UnityEngine.Object.DestroyImmediate(old);
+            MiniGame game;
+            switch (a.file)
+            {
+                case "fox":
+                {
+                    var g = go.AddComponent<FoxMouseHunt>();
+                    g.squeaks = Clips<AudioClip>("mouse_squeak_1", "mouse_squeak_2", "mouse_squeak_3");
+                    g.pounceSound = Clip("pounce");
+                    g.snowMaterial = snow;
+                    g.mouseMaterial = LitMaterial("GameMouse", new Color(0.42f, 0.33f, 0.27f), 0.2f);
+                    game = g; break;
+                }
+                case "squirrel":
+                {
+                    var g = go.AddComponent<SquirrelNutStash>();
+                    g.acornMaterial = LitMaterial("GameAcorn", new Color(0.55f, 0.33f, 0.14f), 0.45f);
+                    g.capMaterial = LitMaterial("GameAcornCap", new Color(0.33f, 0.23f, 0.14f), 0.1f);
+                    g.dropSound = Clip("acorn_drop"); g.digSound = Clip("acorn_dig"); g.sinkSound = Clip("acorn_sink");
+                    game = g; break;
+                }
+                case "deer":
+                    game = go.AddComponent<DeerFreeze>(); break;
+                case "hare":
+                {
+                    var g = go.AddComponent<HareSnowHide>();
+                    g.snowMaterial = snow;
+                    g.burrowSound = Clip("acorn_dig"); g.poofSound = Clip("snow_puff");
+                    game = g; break;
+                }
+                default:
+                {
+                    var g = go.AddComponent<OwlHootEcho>();
+                    g.shortHoot = Clip("hoot_short"); g.longHoot = Clip("hoot_long");
+                    g.head = Bone("Ctrl_Head");
+                    game = g; break;
+                }
+            }
+            EditorUtility.SetDirty(game);
+            Debug.Log($"[AppUI] {a.arScene}: tricks (point = {tricks.specialName}, head {(tricks.head != null ? tricks.head.name : "none")}), game '{game.Title}'");
+        }
+
+        // ---------------------------------------------------------- grounding
+        const string ShadowCatcherMat = GenDir + "/ShadowCatcher.mat";
+        const string ContactShadowMat = GenDir + "/ContactShadow.mat";
+
+        static Material ShaderMaterial(string path, string shader)
+        {
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            var sh = Shader.Find(shader);
+            if (sh == null) throw new Exception("missing shader " + shader);
+            if (mat == null) { mat = new Material(sh); AssetDatabase.CreateAsset(mat, path); }
+            else mat.shader = sh;
+            return mat;
+        }
+
+        /// <summary>
+        /// What makes an animal sit IN the room rather than on top of the video:
+        ///  * an invisible shadow catcher on the floor, so its real-time shadow falls
+        ///    on the camera image of your floor (revealed with the animal);
+        ///  * a soft contact shadow under it that follows it about and fades as it
+        ///    leaves the ground;
+        ///  * the scene light turned to come from overhead, as indoor light does,
+        ///    with its brightness matched to the room by CameraLightEstimator.
+        /// Re-run safe.
+        /// </summary>
+        static void SetupGrounding(Species a, GroundSpawn spawn, Transform stage)
+        {
+            var catcherMat = ShaderMaterial(ShadowCatcherMat, "Custom/AR Shadow Catcher");
+            catcherMat.SetFloat("_ShadowStrength", 0.45f);
+            catcherMat.SetFloat("_EdgeFade", 0.4f);
+            var contactMat = ShaderMaterial(ContactShadowMat, "Custom/AR Contact Shadow");
+            contactMat.SetFloat("_Softness", 1.1f);       // a broad dark core under the body, then a soft edge
+
+            var old = stage.Find("ShadowCatcher");
+            if (old != null) UnityEngine.Object.DestroyImmediate(old.gameObject);
+            var catcher = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            catcher.name = "ShadowCatcher";
+            UnityEngine.Object.DestroyImmediate(catcher.GetComponent<Collider>());
+            catcher.transform.SetParent(stage, false);
+            catcher.transform.localPosition = new Vector3(0f, 0.001f, 0f);
+            catcher.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+            catcher.transform.localScale = new Vector3(5f, 5f, 1f);      // covers every animal's wanderings
+            var cr = catcher.GetComponent<MeshRenderer>();
+            cr.sharedMaterial = catcherMat;
+            cr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            cr.receiveShadows = true;
+            catcher.SetActive(false);
+            spawn.revealWith = (spawn.revealWith ?? new GameObject[0])
+                .Where(g => g != null && g.name != "ShadowCatcher").Append(catcher).ToArray();
+
+            // snowfall must shrink with the stage in Small mode: particle systems
+            // ignore their parents' scale unless told otherwise
+            foreach (var ps in stage.GetComponentsInChildren<ParticleSystem>(true))
+            {
+                var main = ps.main;
+                main.scalingMode = ParticleSystemScalingMode.Hierarchy;
+            }
+
+            GetOrAdd<AnimalTapTarget>(spawn.gameObject);         // tap the animal for its facts
+
+            var cs = GetOrAdd<ContactShadow>(spawn.gameObject);
+            cs.material = contactMat;
+            Transform Bone(string n) => spawn.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t.name == n);
+            switch (a.file)
+            {
+                case "squirrel": cs.opacity = 0.62f; cs.spread = 1.7f; cs.lowerShare = 0.4f; cs.liftReference = Bone("SquirrelRoot"); cs.fadeHeight = 0.05f; break;
+                case "fox":      cs.opacity = 0.6f; cs.spread = 1.5f; cs.lowerShare = 0.3f; cs.liftReference = null; break;
+                case "deer":     cs.opacity = 0.55f; cs.spread = 1.45f; cs.lowerShare = 0.22f; cs.liftReference = null; break;
+                case "hare":     cs.opacity = 0.62f; cs.spread = 1.5f; cs.lowerShare = 0.35f; cs.liftReference = Bone("spine_back"); cs.fadeHeight = 0.12f; break;
+                case "owl":      cs.opacity = 0.58f; cs.spread = 1.5f; cs.lowerShare = 0.3f; cs.liftReference = spawn.transform; cs.fadeHeight = 0.5f; break;
+            }
+            EditorUtility.SetDirty(cs);
+
+            var sun = UnityEngine.Object.FindObjectsByType<Light>(FindObjectsInactive.Include, FindObjectsSortMode.None)
+                .FirstOrDefault(l => l.type == LightType.Directional);
+            if (sun == null)
+            {
+                sun = new GameObject("Directional Light").AddComponent<Light>();
+                sun.type = LightType.Directional;
+            }
+            sun.transform.rotation = Quaternion.Euler(64f, -32f, 0f);     // high, like a ceiling light
+            sun.color = new Color(1f, 0.97f, 0.92f);
+            sun.shadows = LightShadows.Soft;
+            sun.shadowStrength = 1f;                                       // the catcher sets how dark
+            var est = GetOrAdd<CameraLightEstimator>(sun.gameObject);
+            est.shadowCatchers = new[] { catcherMat };
+            EditorUtility.SetDirty(est);
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.93f, 0.96f, 1f) * 0.53f;
+            Debug.Log($"[AppUI] {a.arScene}: shadow catcher, contact shadow ({cs.opacity:F2}), room-matched light");
+        }
+
+        // -------------------------------------------------------------- audio
+        const string AudioDir = "Assets/Audio";
+
+        // GetComponent's missing-component "null" is not C# null in the editor, so ?? cannot be used here
+        static T GetOrAdd<T>(GameObject go) where T : Component
+        {
+            var c = go.GetComponent<T>();
+            return c != null ? c : go.AddComponent<T>();
+        }
+
+        static AudioClip Clip(string name)
+        {
+            var c = AssetDatabase.LoadAssetAtPath<AudioClip>($"{AudioDir}/{name}.wav");
+            if (c == null) Debug.LogWarning($"[AppUI] missing sound {AudioDir}/{name}.wav (run Tools/Audio/synth_animals.py)");
+            return c;
+        }
+
+        /// <summary>
+        /// Import settings for the generated sounds: mono, Vorbis. Short calls are
+        /// decompressed on load (instant, no hitch when they fire); the 30 s
+        /// ambience loops stay compressed in memory.
+        /// </summary>
+        static void ConfigureAudioImports()
+        {
+            if (!Directory.Exists(AudioDir)) { Debug.LogWarning("[AppUI] no " + AudioDir); return; }
+            foreach (var path in Directory.GetFiles(AudioDir, "*.wav"))
+            {
+                var imp = AssetImporter.GetAtPath(path.Replace('\\', '/')) as AudioImporter;
+                if (imp == null) continue;
+                bool amb = Path.GetFileName(path).StartsWith("amb_");
+                var st = imp.defaultSampleSettings;
+                st.loadType = amb ? AudioClipLoadType.CompressedInMemory : AudioClipLoadType.DecompressOnLoad;
+                st.compressionFormat = AudioCompressionFormat.Vorbis;
+                st.quality = amb ? 0.5f : 0.7f;
+                bool changed = !imp.forceToMono || imp.defaultSampleSettings.loadType != st.loadType ||
+                               imp.defaultSampleSettings.compressionFormat != st.compressionFormat ||
+                               !Mathf.Approximately(imp.defaultSampleSettings.quality, st.quality) || imp.loadInBackground != amb;
+                if (!changed) continue;
+                imp.forceToMono = true;
+                imp.loadInBackground = amb;
+                imp.defaultSampleSettings = st;
+                imp.SaveAndReimport();
+            }
+        }
+
+        /// <summary>
+        /// Each animal's voice (idle calls, its open-palm sound, extra cues) on a 3D
+        /// AudioSource on the animal, and the scene's ambience loop on an
+        /// "Ambience" object. Re-run safe: settings are overwritten, nothing doubles up.
+        /// </summary>
+        static void SetupAudio(Species a, GroundSpawn spawn)
+        {
+            var go = spawn.gameObject;
+            var src = GetOrAdd<AudioSource>(go);
+            AnimalAudio.Configure(src);
+            var voice = GetOrAdd<AnimalAudio>(go);
+            AnimalAudio.Cue C(string n, string clip, float v) => new AnimalAudio.Cue { name = n, clip = Clip(clip), volume = v };
+            string amb;
+            switch (a.file)
+            {
+                case "squirrel":
+                    voice.idleCalls = new[] { Clip("squirrel_chatter_1"), Clip("squirrel_chatter_2") };
+                    voice.idleGap = new Vector2(7f, 14f); voice.idleVolume = 0.7f;
+                    voice.gestureClips = new[] { Clip("squirrel_gesture") };
+                    voice.cues = new[] { C("chatter", "squirrel_chatter_2", 0.6f),
+                                         C("patter", "squirrel_patter_1", 0.8f), C("patter", "squirrel_patter_2", 0.8f), C("patter", "squirrel_patter_3", 0.8f) };
+                    amb = "amb_forest"; break;
+                case "fox":
+                    voice.idleCalls = new[] { Clip("fox_bark_1"), Clip("fox_bark_2") };
+                    voice.idleGap = new Vector2(12f, 22f); voice.idleVolume = 0.6f;     // barks carry; keep them rare
+                    voice.gestureClips = new[] { Clip("fox_gesture") };
+                    voice.cues = Enumerable.Range(1, 4).Select(i => C("step", $"snow_step_{i}", 0.9f)).ToArray();
+                    amb = "amb_snowfield"; break;
+                case "deer":
+                    voice.idleCalls = new[] { Clip("deer_snort") };
+                    voice.idleGap = new Vector2(10f, 18f); voice.idleVolume = 0.7f;
+                    voice.gestureClips = new[] { Clip("deer_gesture") };
+                    voice.cues = new[] { C("sniff", "deer_sniff", 0.8f) };
+                    amb = "amb_forest"; break;
+                case "hare":
+                    voice.idleCalls = new[] { Clip("hare_sniff") };
+                    voice.idleGap = new Vector2(6f, 12f); voice.idleVolume = 0.5f;       // hares are quiet
+                    voice.gestureClips = new[] { Clip("hare_gesture") };
+                    voice.cues = new[] { C("sniff", "hare_sniff", 0.6f), C("land", "hare_land_1", 1f), C("land", "hare_land_2", 1f) };
+                    amb = "amb_snowfield"; break;
+                case "owl":
+                    voice.idleCalls = new[] { Clip("owl_hoot_1"), Clip("owl_hoot_2") };
+                    voice.idleGap = new Vector2(9f, 16f); voice.idleVolume = 0.85f;
+                    voice.gestureClips = new[] { Clip("owl_gesture") };
+                    voice.cues = new AnimalAudio.Cue[0];
+                    amb = "amb_night"; break;
+                default: return;
+            }
+            // gesture-trick sounds: the startle call, munching, the trick, and the Say-cheese ticks
+            var (startle, treat, specialClip) = a.file switch
+            {
+                "squirrel" => ("squirrel_alarm", "nibble_1", "squirrel_squeak"),
+                "fox" => ("fox_yelp", "fox_snap", "pounce"),
+                "deer" => ("deer_alarm", "nibble_1", "leap"),
+                "hare" => ("hare_gesture", "nibble_2", "leap"),
+                _ => ("owl_clack", "owl_gulp", "hoot_short"),
+            };
+            voice.cues = voice.cues.Where(c => c.name != "startle" && c.name != "treat" && c.name != "special" && c.name != "tick")
+                .Concat(new[] { C("startle", startle, 1f), C("treat", treat, 0.9f), C("special", specialClip, 1f), C("tick", "game_tick", 0.8f) })
+                .ToArray();
+            voice.appearClip = Clip("snow_puff");
+            voice.appearVolume = a.file == "deer" ? 0.6f : 0.45f;
+            EditorUtility.SetDirty(voice);
+
+            // The owl has no PalmReaction to trigger its sound: listen to the gestures directly
+            var gm = UnityEngine.Object.FindFirstObjectByType<HandGestureManager>(FindObjectsInactive.Include);
+            if (gm != null)
+            {
+                for (int i = gm.onGestureBegan.GetPersistentEventCount() - 1; i >= 0; i--)
+                    if (gm.onGestureBegan.GetPersistentTarget(i) is AnimalAudio)
+                        UnityEventTools.RemovePersistentListener(gm.onGestureBegan, i);
+                if (spawn.GetComponent<PalmReaction>() == null)
+                    UnityEventTools.AddPersistentListener(gm.onGestureBegan, voice.OnGestureBegan);
+                EditorUtility.SetDirty(gm);
+            }
+
+            var ambGo = GameObject.Find("Ambience") ?? new GameObject("Ambience");
+            ambGo.transform.SetParent(null, false);
+            var asrc = GetOrAdd<AudioSource>(ambGo);
+            SceneAmbience.Configure(asrc, Clip(amb));
+            var sa = GetOrAdd<SceneAmbience>(ambGo);
+            sa.volume = a.file == "owl" ? 0.5f : 0.4f;
+            EditorUtility.SetDirty(sa);
+            Debug.Log($"[AppUI] {a.arScene}: sound -- {voice.idleCalls.Length} idle call(s), gesture '{voice.gestureClips[0]?.name}', " +
+                      $"{voice.cues.Length} cue(s), ambience '{amb}'");
+        }
+
+        /// <summary>
+        /// The deer looks at you with its muzzle, so it needs to know which way the
+        /// muzzle points inside Ctrl_Head: the head-mesh vertex furthest from the
+        /// head's pivot, in the rest pose, measured here once.
+        /// </summary>
+        static void SetupDeerPalm(GroundSpawn spawn)
+        {
+            var palm = GetOrAdd<DeerPalm>(spawn.gameObject);
+            var all = spawn.GetComponentsInChildren<Transform>(true);
+            var head = all.FirstOrDefault(t => t.name == "Ctrl_Head");
+            var mf = all.Where(t => t.name == "Deer_Head").Select(t => t.GetComponent<MeshFilter>()).FirstOrDefault(m => m != null);
+            if (head == null || mf == null || mf.sharedMesh == null) { Debug.LogWarning("[AppUI] deer: no Ctrl_Head / Deer_Head to measure the muzzle"); return; }
+            Vector3 best = Vector3.zero; float far = -1f;
+            foreach (var v in mf.sharedMesh.vertices)
+            {
+                Vector3 w = mf.transform.TransformPoint(v);
+                float d = (w - head.position).sqrMagnitude;
+                if (d > far) { far = d; best = w; }
+            }
+            palm.noseLocal = head.InverseTransformDirection(best - head.position).normalized;
+            Vector3 model = spawn.transform.InverseTransformDirection(best - head.position).normalized;
+            Debug.Log($"[AppUI] AR_Deer: DeerPalm, muzzle {Mathf.Sqrt(far):F3} from the head pivot, toward {model} in model space");
+            EditorUtility.SetDirty(palm);
         }
 
         /// <summary>Render the owl at chosen moments of its flight, on a test floor.</summary>
@@ -916,6 +1627,37 @@ namespace AR7103.EditorTools
             };
             var rt = new RenderTexture(560, 700, 24);
             cam.targetTexture = rt;
+
+            // The viewer: a phone held at eye height 2.2 m from the owl's spot
+            var viewer = new GameObject("Viewer").AddComponent<Camera>();
+            viewer.transform.position = new Vector3(-0.8f, 1.45f, 2.1f);
+            viewer.transform.LookAt(new Vector3(0f, 0.7f, 0f));
+            viewer.fieldOfView = 60f;                               // roughly a phone's view
+            viewer.clearFlags = CameraClearFlags.SolidColor;
+            viewer.backgroundColor = new Color(0.8f, 0.84f, 0.88f);
+            viewer.targetTexture = rt;
+            viewer.enabled = false;
+            {
+                var p = flight.Evaluate(T0 + C * 0.25f);
+                flight.PreviewApproach(1f, viewer);
+                p.effort = flight.hoverEffort;
+                flight.Apply(p, Mathf.PI * 0.5f);
+                // point the phone at the middle of the owl, as a person would
+                viewer.transform.LookAt(spawn.MeshBounds().center);
+                float dist = Vector3.Distance(viewer.transform.position,
+                                              new Vector3(owl.transform.position.x, viewer.transform.position.y, owl.transform.position.z));
+                var b = spawn.MeshBounds();
+                Debug.Log($"[Flight] come_to_you horizontal distance from phone={dist:F2} m (want {flight.approachDistance}); " +
+                          $"owl centre {(viewer.transform.position.y - b.center.y):F2} m below eye; feet off floor={b.min.y:F2} m");
+                viewer.Render();
+                RenderTexture.active = rt;
+                var tex = new Texture2D(560, 700, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, 560, 700), 0, 0); tex.Apply();
+                RenderTexture.active = null;
+                File.WriteAllBytes(Path.Combine(outDir, "flight_come_to_you.png"), tex.EncodeToPNG());
+                flight.PreviewApproach(0f, viewer);
+            }
+
             foreach (var (label, ft, phase) in moments)
             {
                 var p = flight.Evaluate(ft);
@@ -930,6 +1672,258 @@ namespace AR7103.EditorTools
                 RenderTexture.active = null;
                 File.WriteAllBytes(Path.Combine(outDir, $"flight_{label}.png"), tex.EncodeToPNG());
             }
+        }
+
+        // --------------------------------------------------------------- fox
+        /// <summary>
+        /// Fox extras: the walk loop, fur on the fur mesh only, the circle walk, and
+        /// its snow -- a soft-edged patch under the circle plus local snowfall, both
+        /// revealed with the fox. Re-run safe: generated pieces are replaced, the
+        /// FoxWalk/ShellFur components are only added if missing.
+        /// </summary>
+        static void SetupFox(GroundSpawn spawn, Transform stage, Scene scene)
+        {
+            GameObject fox = spawn.gameObject;
+            var anim = fox.GetComponentInChildren<Animator>(true) ?? fox.AddComponent<Animator>();
+            anim.runtimeAnimatorController = AssetDatabase.LoadAssetAtPath<AnimatorController>(FoxController);
+            anim.applyRootMotion = false;                 // FoxWalk moves it, not the clip
+
+            var walk = fox.GetComponent<FoxWalk>() ?? fox.AddComponent<FoxWalk>();
+
+            var furMesh = fox.GetComponentsInChildren<SkinnedMeshRenderer>(true).FirstOrDefault(r => r.name == "Fox_Fur");
+            if (furMesh != null && furMesh.GetComponent<ShellFur>() == null)
+            {
+                var fur = furMesh.gameObject.AddComponent<ShellFur>();
+                fur.shellCount = 16;          // each shell is a skinned mesh; 16 keeps phones smooth
+                fur.furLength = 0.035f;       // local units of the (unscaled) model
+                fur.density = 260f;
+                fur.bareBelow = 0.02f;        // the legs are near-black; the default 0.07 skips them
+            }
+            // short fur on the face and ears, from the skin-weight mask baked on export
+            var furComp = furMesh != null ? furMesh.GetComponent<ShellFur>() : null;
+            if (furComp != null) furComp.lengthFromVertexColor = true;
+
+            // snow: patch + snowfall, hidden until the fox appears
+            foreach (var n in new[] { "SnowPatch", "FoxSnowfall" })
+            {
+                var old = stage.Find(n);
+                if (old != null) UnityEngine.Object.DestroyImmediate(old.gameObject);
+            }
+            var patch = MakeSnowPatch(stage, walk.radius + 0.45f);
+            var fall = MakeSnowfall(stage, scene, walk.radius + 0.5f);
+            patch.SetActive(false);
+            if (fall != null) fall.SetActive(false);
+            spawn.revealWith = fall != null ? new[] { patch, fall } : new[] { patch };
+            Debug.Log("[AppUI] AR_Fox: walk loop, fur, circle walk and snow set up");
+        }
+
+        // -------------------------------------------------------------- hare
+        /// <summary>
+        /// Hare extras: the hop clip, fur on the fur mesh, the travel curve from
+        /// export, and its ground -- the bark chips cut from the Blender scene over a
+        /// soft dark-soil patch, like the book photo. Re-run safe.
+        /// </summary>
+        static void SetupHare(GroundSpawn spawn, Transform stage, Scene scene)
+        {
+            GameObject hare = spawn.gameObject;
+            var anim = hare.GetComponentInChildren<Animator>(true) ?? hare.AddComponent<Animator>();
+            anim.runtimeAnimatorController = AssetDatabase.LoadAssetAtPath<AnimatorController>(HareController);
+            anim.applyRootMotion = false;                 // HareHop moves it, from the recorded travel
+
+            var hop = hare.GetComponent<HareHop>() ?? hare.AddComponent<HareHop>();
+            var travel = AssetDatabase.LoadAssetAtPath<TextAsset>(HareTravel);
+            if (travel == null) throw new Exception("missing " + HareTravel);
+            var data = JsonUtility.FromJson<TravelData>(travel.text);
+            hop.metres = data.metres;
+            hop.total = data.total;
+
+            var furMesh = hare.GetComponentsInChildren<SkinnedMeshRenderer>(true).FirstOrDefault(r => r.name == "Hare_Fur");
+            if (furMesh != null && furMesh.GetComponent<ShellFur>() == null)
+            {
+                var fur = furMesh.gameObject.AddComponent<ShellFur>();
+                fur.shellCount = 16;
+                fur.furLength = 0.04f;        // a dense winter coat
+                fur.density = 300f;
+            }
+            // short fur on the face and ears, from the skin-weight mask baked on export
+            var furComp = furMesh != null ? furMesh.GetComponent<ShellFur>() : null;
+            if (furComp != null) furComp.lengthFromVertexColor = true;
+
+            foreach (var n in new[] { "HareSoil", "HareGround" })
+            {
+                var old = stage.Find(n);
+                if (old != null) UnityEngine.Object.DestroyImmediate(old.gameObject);
+            }
+            // chips were cut at the hare's authored size; scale them with the hare
+            float scale = spawn.targetHeight / NativeHeight(HareFbx);
+            var soil = MakeGroundPatch(stage, 0.62f, "HareSoil", new Color(0.33f, 0.18f, 0.13f, 1f), 0.05f,
+                                       GenDir + "/hare_soil.png", GenDir + "/HareSoil.mat", GenDir + "/HareSoil.asset", warm: true);
+            var chips = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(HareGroundFbx), scene);
+            chips.name = "HareGround";
+            chips.transform.SetParent(stage, false);
+            chips.transform.localScale = Vector3.one * scale;
+            soil.SetActive(false); chips.SetActive(false);
+            spawn.revealWith = new[] { soil, chips };
+            Debug.Log($"[AppUI] AR_Hare: hop clip, fur, travel ({hop.total:F2} m/loop), bark chips at x{scale:F2}");
+        }
+
+        [Serializable] class TravelData { public float[] metres; public float total; }
+
+        /// <summary>Height of a model at import scale, measured from its posed mesh.</summary>
+        static float NativeHeight(string fbx)
+        {
+            var go = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(fbx));
+            var probe = go.AddComponent<GroundSpawn>();
+            float h = probe.MeshBounds().size.y;
+            UnityEngine.Object.DestroyImmediate(go);
+            return h > 1e-4f ? h : 1f;
+        }
+
+        const string SnowTexPath = GenDir + "/snow_patch.png";
+        const string SnowMatPath = GenDir + "/SnowPatch.mat";
+        const string SnowMeshPath = GenDir + "/SnowPatch.asset";
+
+        /// <summary>
+        /// A soft-edged disc of snow on the floor. The edge fades out through an
+        /// irregular, noisy alpha so it reads as snow lying on the ground rather
+        /// than a white plate. Transparent URP Lit, so it still takes the fox's shadow.
+        /// </summary>
+        static GameObject MakeSnowPatch(Transform stage, float radius) =>
+            MakeGroundPatch(stage, radius, "SnowPatch", new Color(0.97f, 0.98f, 1f, 1f), 0.35f,
+                            SnowTexPath, SnowMatPath, SnowMeshPath, warm: false);
+
+        static GameObject MakeGroundPatch(Transform stage, float radius, string name, Color tint, float smoothness,
+                                          string texPath, string matPath, string meshPath, bool warm)
+        {
+            const int N = 512;
+            var tex = new Texture2D(N, N, TextureFormat.RGBA32, false);
+            var px = new Color32[N * N];
+            var rng = new System.Random(7);
+            float[] wobble = Enumerable.Range(0, 16).Select(_ => (float)rng.NextDouble()).ToArray();
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    float u = (x + .5f) / N * 2f - 1f, v = (y + .5f) / N * 2f - 1f;
+                    float d = Mathf.Sqrt(u * u + v * v);
+                    float ang = Mathf.Atan2(v, u);
+                    // lumpy outline: a few low-frequency waves on the radius
+                    float edge = 0.78f;
+                    for (int k = 0; k < 4; k++)
+                        edge += 0.045f * Mathf.Sin(ang * (2 + k) + wobble[k] * 6.28f) * (0.6f + wobble[k + 4]);
+                    float a = Mathf.Clamp01((edge - d) / 0.2f);
+                    a = a * a * (3f - 2f * a);
+                    float grain = 0.93f + 0.07f * Mathf.PerlinNoise(x * 0.06f, y * 0.06f);
+                    byte c = (byte)Mathf.RoundToInt(255f * grain);
+                    byte blue = warm ? c : (byte)Mathf.Min(255, c + 4);   // snow skews cool, soil does not
+                    px[y * N + x] = new Color32(c, c, blue, (byte)Mathf.RoundToInt(a * 255f));
+                }
+            tex.SetPixels32(px);
+            File.WriteAllBytes(texPath, tex.EncodeToPNG());
+            UnityEngine.Object.DestroyImmediate(tex);
+            AssetDatabase.ImportAsset(texPath, ImportAssetOptions.ForceSynchronousImport);
+            var ti = (TextureImporter)AssetImporter.GetAtPath(texPath);
+            ti.textureType = TextureImporterType.Default;
+            ti.alphaIsTransparency = true;
+            ti.wrapMode = TextureWrapMode.Clamp;
+            ti.mipmapEnabled = true;
+            ti.SaveAndReimport();
+            var snowTex = AssetDatabase.LoadAssetAtPath<Texture2D>(texPath);
+
+            // gently domed disc, a few millimetres high, so paws sink in a touch
+            var mesh = new Mesh { name = name };
+            const int rings = 10, segs = 72;
+            var verts = new System.Collections.Generic.List<Vector3> { new Vector3(0f, 0.008f, 0f) };
+            var uvs = new System.Collections.Generic.List<Vector2> { new Vector2(0.5f, 0.5f) };
+            for (int r = 1; r <= rings; r++)
+                for (int sgi = 0; sgi < segs; sgi++)
+                {
+                    float t = r / (float)rings, ang = sgi / (float)segs * Mathf.PI * 2f;
+                    float h = 0.008f * (1f - t * t) + 0.002f * Mathf.PerlinNoise(r * 0.7f, sgi * 0.3f);
+                    verts.Add(new Vector3(Mathf.Cos(ang) * radius * t, h, Mathf.Sin(ang) * radius * t));
+                    uvs.Add(new Vector2(0.5f + 0.5f * Mathf.Cos(ang) * t, 0.5f + 0.5f * Mathf.Sin(ang) * t));
+                }
+            var tris = new System.Collections.Generic.List<int>();
+            for (int sgi = 0; sgi < segs; sgi++) { tris.Add(0); tris.Add(1 + (sgi + 1) % segs); tris.Add(1 + sgi); }
+            for (int r = 1; r < rings; r++)
+                for (int sgi = 0; sgi < segs; sgi++)
+                {
+                    int a0 = 1 + (r - 1) * segs + sgi, a1 = 1 + (r - 1) * segs + (sgi + 1) % segs;
+                    int b0 = 1 + r * segs + sgi, b1 = 1 + r * segs + (sgi + 1) % segs;
+                    tris.AddRange(new[] { a0, a1, b1, a0, b1, b0 });
+                }
+            mesh.SetVertices(verts); mesh.SetUVs(0, uvs); mesh.SetTriangles(tris, 0);
+            mesh.RecalculateNormals(); mesh.RecalculateBounds();
+            AssetDatabase.DeleteAsset(meshPath);
+            AssetDatabase.CreateAsset(mesh, meshPath);
+
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            if (mat == null)
+            {
+                mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                AssetDatabase.CreateAsset(mat, matPath);
+            }
+            mat.SetTexture("_BaseMap", snowTex);
+            mat.SetColor("_BaseColor", tint);
+            mat.SetFloat("_Smoothness", smoothness);
+            mat.SetFloat("_Surface", 1f);                                  // transparent
+            mat.SetFloat("_Blend", 0f);                                    // alpha blend
+            mat.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            mat.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            mat.SetFloat("_SrcBlendAlpha", (float)UnityEngine.Rendering.BlendMode.One);
+            mat.SetFloat("_DstBlendAlpha", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            mat.SetFloat("_ZWrite", 0f);
+            mat.SetOverrideTag("RenderType", "Transparent");
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            // URP keeps specular at zero alpha by default ("Preserve Specular Lighting"),
+            // which lit the whole invisible disc as a pale halo past the snow's edge.
+            mat.SetFloat("_BlendModePreserveSpecular", 0f);
+            mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            mat.DisableKeyword("_ALPHAMODULATE_ON");
+            mat.SetFloat("_SpecularHighlights", 0f);
+            mat.EnableKeyword("_SPECULARHIGHLIGHTS_OFF");
+            mat.SetFloat("_EnvironmentReflections", 0f);
+            mat.EnableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
+            mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+            EditorUtility.SetDirty(mat);
+
+            var go = new GameObject(name);
+            go.transform.SetParent(stage, false);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.sharedMaterial = mat;
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = true;
+            return go;
+        }
+
+        /// <summary>
+        /// Local snowfall over the patch, reusing the Snowfall component and flake
+        /// material the squirrel already ships with in SampleScene.
+        /// </summary>
+        static GameObject MakeSnowfall(Transform stage, Scene scene, float halfWidth)
+        {
+            var src = EditorSceneManager.OpenScene(ARPath, OpenSceneMode.Additive);
+            var tmpl = src.GetRootGameObjects().SelectMany(g => g.GetComponentsInChildren<Snowfall>(true)).FirstOrDefault();
+            Material flakeMat = tmpl != null ? tmpl.material : null;
+            Mesh flakeMesh = tmpl != null ? tmpl.flakeMesh : null;
+            EditorSceneManager.CloseScene(src, true);
+            if (flakeMat == null) { Debug.LogWarning("[AppUI] no Snowfall material to reuse; fox gets no snowfall"); return null; }
+
+            var go = new GameObject("FoxSnowfall");
+            go.transform.SetParent(stage, false);
+            go.AddComponent<ParticleSystem>();
+            var sf = go.AddComponent<Snowfall>();
+            sf.area = new Vector2(halfWidth * 2f, halfWidth * 2f);
+            sf.spawnHeight = 1.5f;
+            sf.fallDepth = 0.02f;
+            sf.flakesPerSecond = 40f;
+            sf.fallSpeed = 0.3f;
+            sf.flakeSize = new Vector2(0.006f, 0.014f);
+            sf.drift = 0.08f;
+            sf.material = flakeMat;
+            sf.flakeMesh = flakeMesh;
+            sf.Configure();
+            return go;
         }
 
         /// <summary>
@@ -957,6 +1951,268 @@ namespace AR7103.EditorTools
             Debug.Log("[AppUI] " + scene.name + ": added Plane Finder + Ground Plane Stage");
         }
 
+        /// <summary>Three short field-guide facts per animal, for the HUD's fact card.</summary>
+        static string[] Facts(string file) => file switch
+        {
+            "squirrel" => new[] {
+                "It doesn't hibernate. All winter it lives on cones it stored in a midden, a pile that can hold thousands.",
+                "It weighs only about 200 g, roughly as much as an apple.",
+                "It chatters and stamps its feet to warn other squirrels off its patch." },
+            "fox" => new[] {
+                "It can hear a mouse moving under a metre of snow, then pounces nose-first to catch it.",
+                "It sleeps with its bushy tail wrapped over its nose, like a scarf.",
+                "It looks big in its winter coat, but usually weighs just 4\u20137 kg." },
+            "deer" => new[] {
+                "It raises its white tail like a flag to warn other deer of danger.",
+                "Its winter coat is made of hollow hairs that trap warm air.",
+                "In deep snow, deer gather in sheltered \u2018yards\u2019 and share packed-down trails." },
+            "hare" => new[] {
+                "In the far north it stays white all year round.",
+                "It can sprint at up to 60 km/h, sometimes hopping upright on its hind legs.",
+                "Thick fur even covers the soles of its feet, like built-in snowshoes." },
+            "owl" => new[] {
+                "It hunts in daylight, handy in the Arctic summer when the sun never sets.",
+                "Feathers cover its legs and toes, like a pair of warm slippers.",
+                "A single snowy owl may eat more than 1,600 lemmings in a year." },
+            _ => new string[0],
+        };
+
+        /// <summary>The field card's three quick stats.</summary>
+        static (string, string)[] Stats(string file)
+        {
+            float h = SpawnHeight(file);
+            string height = h >= 1f ? $"{h:0.#} m" : $"{Mathf.RoundToInt(h * 100f)} cm";
+            var (weight, eats) = file switch
+            {
+                "squirrel" => ("200 g", "Cones, seeds"),
+                "fox" => ("4\u20137 kg", "Mice, voles"),
+                "deer" => ("40\u201390 kg", "Twigs, buds"),
+                "hare" => ("3\u20135 kg", "Willow, moss"),
+                "owl" => ("1.6\u20133 kg", "Lemmings"),
+                _ => ("", ""),
+            };
+            return new[] { ("HEIGHT", height), ("WEIGHT", weight), ("EATS", eats) };
+        }
+
+        /// <summary>What the Point gesture makes each animal do.</summary>
+        static string SpecialName(string file) => file switch
+        {
+            "squirrel" => "Spin", "fox" => "Pounce", "deer" => "Leap", "hare" => "Binky", "owl" => "Head turn", _ => "Trick",
+        };
+
+        static string GameTitle(string file) => file switch
+        {
+            "squirrel" => "Nut Stash", "fox" => "Mouse Hunt", "deer" => "Freeze!", "hare" => "Snow Hide", "owl" => "Hoot Echo", _ => "",
+        };
+
+        static string GameLength(string file) => file switch
+        {
+            "squirrel" => "30 seconds", "fox" => "5 rounds", "deer" => "45 seconds", "hare" => "5 rounds", "owl" => "Until a slip", _ => "",
+        };
+
+        static string SizeNote(string file)
+        {
+            float h = SpawnHeight(file);
+            string size = h >= 1f ? $"{h:0.#} m" : $"{Mathf.RoundToInt(h * 100f)} cm";
+            return $"Shown at life size \u00b7 about {size} tall";
+        }
+
+        /// <summary>
+        /// The minigame layer on the HUD: top bar (game, round/timer, score), hint
+        /// card with Quit, a score pop-up, two choice buttons, and the results card.
+        /// </summary>
+        static MiniGameHost BuildGameUI(Canvas canvas, RectTransform safe)
+        {
+            var host = canvas.gameObject.AddComponent<MiniGameHost>();
+
+            // top bar, under Back / Mute
+            var bar = Node("GameBar", safe);
+            bar.anchorMin = new Vector2(0f, 1f); bar.anchorMax = new Vector2(1f, 1f); bar.pivot = new Vector2(0.5f, 1f);
+            bar.offsetMin = new Vector2(Margin - 16f, -282f); bar.offsetMax = new Vector2(-(Margin - 16f), -150f);
+            var bh = bar.gameObject.AddComponent<HorizontalLayoutGroup>();
+            bh.spacing = 24f; bh.childAlignment = TextAnchor.MiddleLeft;
+            bh.childControlWidth = bh.childControlHeight = true;
+            bh.childForceExpandWidth = false; bh.childForceExpandHeight = true;
+            var barGroup = bar.gameObject.AddComponent<CanvasGroup>();
+            barGroup.blocksRaycasts = false;
+            RectTransform BarPill(string name, Color bg, out HorizontalLayoutGroup h)
+            {
+                var r = Node(name, bar);
+                LayoutBackground(r, 2.2f, bg);
+                h = r.gameObject.AddComponent<HorizontalLayoutGroup>();
+                h.padding = new RectOffset(42, 42, 0, 0); h.spacing = 18f; h.childAlignment = TextAnchor.MiddleCenter;
+                h.childControlWidth = h.childControlHeight = true;
+                h.childForceExpandWidth = false; h.childForceExpandHeight = false;
+                r.gameObject.AddComponent<ContentSizeFitter>().horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+                return r;
+            }
+            var tp = BarPill("Game", WithA(Night, 0.62f), out _);
+            FixedIcon(tp, "Dot", _circle, Rust, 24f);
+            var titleText = Text(tp, "Title", "Mouse Hunt", 42, Snow, FontStyles.Bold);
+            var spacer = Node("Spacer", bar); spacer.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            var rp = BarPill("Round", WithA(Night, 0.62f), out _);
+            var roundLabel = Text(rp, "Label", "ROUND", 31, Lichen, FontStyles.Bold, spacing: 3f);
+            var roundText = Text(rp, "Value", "1/5", 45, Snow, FontStyles.Bold);
+            var sp = BarPill("Score", Snow, out _);
+            Text(sp, "Label", "SCORE", 31, Hex("4A5A60"), FontStyles.Bold, spacing: 3f);
+            var scoreText = Text(sp, "Value", "0", 45, Night, FontStyles.Bold);
+
+            // hint card + Quit, bottom
+            var hint = Node("GameHint", safe);
+            hint.anchorMin = new Vector2(0f, 0f); hint.anchorMax = new Vector2(1f, 0f); hint.pivot = new Vector2(0.5f, 0f);
+            hint.offsetMin = new Vector2(Margin, 60f); hint.offsetMax = new Vector2(-Margin, 60f);
+            var hv = hint.gameObject.AddComponent<VerticalLayoutGroup>();
+            hv.spacing = 34f; hv.childAlignment = TextAnchor.LowerCenter;
+            hv.childControlWidth = hv.childControlHeight = true;
+            hv.childForceExpandWidth = false; hv.childForceExpandHeight = false;
+            hint.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var hintGroup = hint.gameObject.AddComponent<CanvasGroup>();
+            var hcard = Node("Card", hint);
+            LayoutBackground(hcard, 1.9f, WithA(Night, 0.72f));
+            var hcv = hcard.gameObject.AddComponent<VerticalLayoutGroup>();
+            hcv.padding = new RectOffset(54, 54, 40, 44); hcv.spacing = 8f;
+            hcv.childControlWidth = hcv.childControlHeight = true;
+            hcv.childForceExpandWidth = true; hcv.childForceExpandHeight = false;
+            hcard.gameObject.AddComponent<LayoutElement>().preferredWidth = 900f;
+            var hintTitle = Text(hcard, "Title", "Listen\u2026", 45, Snow, FontStyles.Bold);
+            var hintBody = Text(hcard, "Body", "Tap the snow where you hear the mouse squeak.", 39, WithA(Snow, 0.82f), FontStyles.Normal, lineSpacing: 6f);
+            hintBody.textWrappingMode = TextWrappingModes.Normal;
+            hintTitle.raycastTarget = hintBody.raycastTarget = false;
+            var quit = PillButton(hint, "Quit", "Quit game", WithA(Night, 0.55f), Snow, height: 120f, glow: false, labelSize: 39f, ppu: 2.1f);
+            var qle = quit.gameObject.AddComponent<LayoutElement>();
+            qle.preferredWidth = 330f; qle.preferredHeight = 120f;
+
+            // choices (Hoot Echo), above the hint card
+            var choices = Node("GameChoices", safe);
+            choices.anchorMin = new Vector2(0f, 0f); choices.anchorMax = new Vector2(1f, 0f); choices.pivot = new Vector2(0.5f, 0f);
+            choices.offsetMin = new Vector2(Margin, 560f); choices.offsetMax = new Vector2(-Margin, 740f);
+            var chh = choices.gameObject.AddComponent<HorizontalLayoutGroup>();
+            chh.spacing = 36f; chh.childControlWidth = chh.childControlHeight = true;
+            chh.childForceExpandWidth = true; chh.childForceExpandHeight = true;
+            var choiceGroup = choices.gameObject.AddComponent<CanvasGroup>();
+            var cA = PillButton(choices, "A", "Short", Snow, Night, height: 180f, glow: false, labelSize: 54f, ppu: 1.4f);
+            var cB = PillButton(choices, "B", "Long", Rust, RustInk, height: 180f, glow: true, labelSize: 54f, ppu: 1.4f);
+
+            // score pop-up
+            var pop = Node("GamePopup", safe);
+            pop.anchorMin = pop.anchorMax = pop.pivot = new Vector2(0.5f, 0.5f);
+            pop.anchoredPosition = new Vector2(0f, 330f);
+            var popBg = LayoutBackground(pop, 2.4f, Success);
+            var ph = pop.gameObject.AddComponent<HorizontalLayoutGroup>();
+            ph.padding = new RectOffset(48, 48, 26, 28); ph.childAlignment = TextAnchor.MiddleCenter;
+            ph.childControlWidth = ph.childControlHeight = true;
+            var pcf = pop.gameObject.AddComponent<ContentSizeFitter>();
+            pcf.horizontalFit = pcf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var popText = Text(pop, "Text", "+100 Perfect pounce!", 46, Hex("06210F"), FontStyles.Bold);
+            popText.textWrappingMode = TextWrappingModes.NoWrap;
+            var popGroup = pop.gameObject.AddComponent<CanvasGroup>();
+            popGroup.blocksRaycasts = false;
+
+            // results
+            var res = Node("GameResults", safe);
+            res.anchorMin = new Vector2(0f, 0.5f); res.anchorMax = new Vector2(1f, 0.5f); res.pivot = new Vector2(0.5f, 0.5f);
+            res.offsetMin = new Vector2(60f, 0f); res.offsetMax = new Vector2(-60f, 0f);
+            LayoutBackground(res, 1.4f, WithA(Hex("080C0D"), 0.94f));
+            var rv = res.gameObject.AddComponent<VerticalLayoutGroup>();
+            rv.padding = new RectOffset(72, 72, 84, 66); rv.spacing = 40f; rv.childAlignment = TextAnchor.UpperCenter;
+            rv.childControlWidth = rv.childControlHeight = true;
+            rv.childForceExpandWidth = false; rv.childForceExpandHeight = false;
+            res.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var resGroup = res.gameObject.AddComponent<CanvasGroup>();
+            var rGame = Text(res, "Game", "MOUSE HUNT", 33, Lichen, FontStyles.Bold, spacing: 6f);
+            var starRow = Node("Stars", res);
+            var srh = starRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+            srh.spacing = 18f; srh.childAlignment = TextAnchor.MiddleCenter;
+            srh.childControlWidth = srh.childControlHeight = true;
+            srh.childForceExpandWidth = srh.childForceExpandHeight = false;
+            var starImgs = new[] { FixedIcon(starRow, "S1", _starOn, Rust, 102f), FixedIcon(starRow, "S2", _starOn, Rust, 120f), FixedIcon(starRow, "S3", _starOff, Rust, 102f) };
+            var rVerdict = Text(res, "Verdict", "Sharp ears!", 84, Snow, FontStyles.Bold, spacing: -1f);
+            rVerdict.alignment = TextAlignmentOptions.Center;
+            var scoreRow = Node("ScoreRow", res);
+            var srow = scoreRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+            srow.spacing = 18f; srow.childAlignment = TextAnchor.LowerCenter;
+            srow.childControlWidth = srow.childControlHeight = true;
+            srow.childForceExpandWidth = srow.childForceExpandHeight = false;
+            var rScore = Text(scoreRow, "Score", "340", 168, Snow, FontStyles.Bold, spacing: -2f);
+            var rUnit = Text(scoreRow, "Unit", "points", 42, Lichen, FontStyles.Bold);
+            var bestChip = Node("Best", res);
+            LayoutBackground(bestChip, 3f, WithA(Success, 0.16f));
+            var bch = bestChip.gameObject.AddComponent<HorizontalLayoutGroup>();
+            bch.padding = new RectOffset(42, 42, 18, 20);
+            bch.childControlWidth = bch.childControlHeight = true;
+            bestChip.gameObject.AddComponent<ContentSizeFitter>().horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var rBest = Text(bestChip, "Text", "New best!", 36, Success, FontStyles.Bold);
+            var rDetail = Text(res, "Detail", "100 \u00b7 50 \u00b7 100 \u00b7 0 \u00b7 90", 38, Lichen, FontStyles.Normal);
+            rDetail.alignment = TextAlignmentOptions.Center;
+            var btns = Node("Buttons", res);
+            btns.gameObject.AddComponent<LayoutElement>().preferredWidth = RefW - 120f - 144f;
+            var bh2 = btns.gameObject.AddComponent<HorizontalLayoutGroup>();
+            bh2.spacing = 30f; bh2.childControlWidth = bh2.childControlHeight = true;
+            bh2.childForceExpandWidth = true; bh2.childForceExpandHeight = true;
+            var done = PillButton(btns, "Done", "Done", WithA(Snow, 0.1f), Snow, height: 156f, glow: false, labelSize: 45f, ppu: 1.4f);
+            done.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            var again = PillButton(btns, "Again", "Play again", Rust, RustInk, height: 156f, glow: false, labelSize: 45f, ppu: 1.4f);
+            again.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1.4f;
+            foreach (var b in new[] { done, again }) b.gameObject.GetComponent<LayoutElement>().preferredHeight = 156f;
+
+            foreach (var g in new[] { barGroup, hintGroup, choiceGroup, popGroup, resGroup }) { g.alpha = 0f; g.blocksRaycasts = false; g.interactable = false; }
+
+            host.gameHud = barGroup;
+            host.titleText = titleText; host.roundLabel = roundLabel; host.roundText = roundText; host.scoreText = scoreText;
+            host.hintGroup = hintGroup; host.hintTitle = hintTitle; host.hintBody = hintBody; host.quitButton = quit;
+            host.popup = popGroup; host.popupText = popText; host.popupBg = popBg;
+            host.choiceGroup = choiceGroup; host.choiceA = cA; host.choiceB = cB;
+            host.choiceALabel = cA.GetComponentInChildren<TMP_Text>(); host.choiceBLabel = cB.GetComponentInChildren<TMP_Text>();
+            host.results = resGroup; host.resultsGame = rGame; host.resultsVerdict = rVerdict; host.resultsScore = rScore;
+            host.resultsUnit = rUnit; host.resultsBest = rBest; host.resultsDetail = rDetail;
+            host.stars = starImgs; host.starOn = _starOn; host.starOff = _starOff;
+            host.doneButton = done; host.againButton = again;
+            host.good = Success; host.ok = Rust; host.bad = Hex("8E989C");
+            host.tick = Clip("game_tick"); host.go = Clip("game_go"); host.point = Clip("game_point"); host.great = Clip("game_great");
+            host.miss = Clip("game_miss"); host.win = Clip("game_win"); host.over = Clip("game_over");
+            return host;
+        }
+
+        static Button IconButton(RectTransform parent, string name, Sprite icon, float size, float iconSize, out Image iconImg)
+        {
+            Button b = PillButton(parent, name, "", WithA(Night, 0.5f), Snow, height: size, glow: false, labelSize: 10f, ppu: 2.1f);
+            var rt = (RectTransform)b.transform;
+            rt.sizeDelta = new Vector2(size, size);
+            iconImg = Img(Node("Icon", rt), icon, Snow);
+            iconImg.rectTransform.anchorMin = iconImg.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            iconImg.rectTransform.sizeDelta = new Vector2(iconSize, iconSize);
+            iconImg.raycastTarget = false;
+            return b;
+        }
+
+        static RectTransform Pill(RectTransform parent, string name, Vector2 anchor, float y, float alpha, out CanvasGroup group,
+                                  int padX = 40, int padY = 22, float spacing = 16f)
+        {
+            var rt = Node(name, parent);
+            rt.anchorMin = rt.anchorMax = rt.pivot = anchor;
+            rt.anchoredPosition = new Vector2(0f, y);
+            LayoutBackground(rt, 2.2f, WithA(Night, alpha));
+            var h = rt.gameObject.AddComponent<HorizontalLayoutGroup>();
+            h.padding = new RectOffset(padX, padX + 4, padY, padY); h.spacing = spacing;
+            h.childAlignment = TextAnchor.MiddleCenter;
+            h.childControlWidth = h.childControlHeight = true;
+            h.childForceExpandWidth = h.childForceExpandHeight = false;
+            var cf = rt.gameObject.AddComponent<ContentSizeFitter>();
+            cf.horizontalFit = cf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            group = rt.gameObject.AddComponent<CanvasGroup>();
+            group.blocksRaycasts = false; group.interactable = false;
+            return rt;
+        }
+
+        static Image FixedIcon(RectTransform parent, string name, Sprite sprite, Color color, float size)
+        {
+            var img = Img(Node(name, parent), sprite, color);
+            var le = img.gameObject.AddComponent<LayoutElement>();
+            le.preferredWidth = le.preferredHeight = le.minWidth = le.minHeight = size;
+            img.raycastTarget = false;
+            return img;
+        }
+
         static void BuildARHud(Species a)
         {
             var scene = SceneManager.GetActiveScene();
@@ -970,13 +2226,86 @@ namespace AR7103.EditorTools
             safe.gameObject.AddComponent<SafeAreaFitter>();
             Button back = BackButton(safe);
 
-            // shown once the animal is down: what it is, and that it can be moved
+            // sound on/off, top right, level with Back
+            Button mute = IconButton(safe, "Mute", _soundOn, 92f, 54f, out Image muteIcon);
+            var mrt = (RectTransform)mute.transform;
+            mrt.anchorMin = mrt.anchorMax = mrt.pivot = new Vector2(1f, 1f);
+            mrt.anchoredPosition = new Vector2(-(Margin - 16f), -28f);
+
+            // Life size | Small, top right next to Mute
+            var size = Node("SizeToggle", safe);
+            size.anchorMin = size.anchorMax = size.pivot = new Vector2(1f, 1f);
+            size.sizeDelta = new Vector2(400f, 92f);
+            size.anchoredPosition = new Vector2(-(Margin - 16f) - 92f - 20f, -28f);
+            var sizeBg = Img(Stretch(Node("Fill", size)), _round, WithA(Night, 0.5f), sliced: true, ppu: 2.1f);
+            var sizeBtn = size.gameObject.AddComponent<Button>();
+            sizeBtn.targetGraphic = sizeBg;
+            var hlHolder = Stretch(Node("Track", size));
+            hlHolder.offsetMin = new Vector2(6f, 6f); hlHolder.offsetMax = new Vector2(-6f, -6f);
+            var hl = Img(Node("Highlight", hlHolder), _round, Snow, sliced: true, ppu: 2.4f);
+            hl.raycastTarget = false;
+            hl.rectTransform.anchorMin = new Vector2(0f, 0f); hl.rectTransform.anchorMax = new Vector2(0.5f, 1f);
+            hl.rectTransform.offsetMin = hl.rectTransform.offsetMax = Vector2.zero;
+            TMP_Text Half(string nm, string label, float x0, float x1)
+            {
+                var t = Text(size, nm, label, 32, Snow, FontStyles.Bold);
+                t.rectTransform.anchorMin = new Vector2(x0, 0f); t.rectTransform.anchorMax = new Vector2(x1, 1f);
+                t.rectTransform.offsetMin = t.rectTransform.offsetMax = Vector2.zero;
+                t.alignment = TextAlignmentOptions.Center;
+                t.raycastTarget = false;
+                return t;
+            }
+            var lifeLabel = Half("Life", "Life size", 0f, 0.5f);
+            lifeLabel.color = Night;                       // selected by default
+            var smallLabel = Half("Small", "Small", 0.5f, 1f);
+            var sizeGroup = size.gameObject.AddComponent<CanvasGroup>();
+
+            // the shutter, bottom right: white ring round a white disc
+            var shutter = Node("Shutter", safe);
+            shutter.anchorMin = shutter.anchorMax = shutter.pivot = new Vector2(1f, 0f);
+            shutter.sizeDelta = new Vector2(136f, 136f);
+            shutter.anchoredPosition = new Vector2(-(Margin - 16f), 64f);
+            var sHalo = Img(Node("Halo", shutter), _shadow, WithA(Night, 0.45f), sliced: true);
+            Anchor(sHalo.rectTransform, 0, 0, 1, 1);
+            sHalo.rectTransform.offsetMin = new Vector2(-34f, -40f); sHalo.rectTransform.offsetMax = new Vector2(34f, 28f);
+            sHalo.raycastTarget = false;
+            var ring = Img(Stretch(Node("Ring", shutter)), _ringThick, Snow);
+            var disc = Img(Node("Disc", shutter), _circle, WithA(Snow, 0.92f));
+            disc.rectTransform.anchorMin = disc.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            disc.rectTransform.sizeDelta = new Vector2(100f, 100f);
+            var shutterBtn = shutter.gameObject.AddComponent<Button>();
+            shutterBtn.targetGraphic = disc;
+            ring.raycastTarget = false;
+            var shutterGroup = shutter.gameObject.AddComponent<CanvasGroup>();
+
+            // after a shot: thumbnail + result, top centre under the tips row
+            var shot = Pill(safe, "PhotoSaved", new Vector2(0.5f, 1f), -262f, 0.72f, out CanvasGroup shotGroup, 22, 18, 22f);
+            var thumbFrame = Node("Thumb", shot);
+            var tle = thumbFrame.gameObject.AddComponent<LayoutElement>();
+            tle.preferredWidth = tle.minWidth = 84f; tle.preferredHeight = tle.minHeight = 150f;
+            var tMask = Img(Stretch(Node("Mask", thumbFrame)), _round, Color.white, sliced: true, ppu: 6f);
+            tMask.gameObject.AddComponent<Mask>().showMaskGraphic = false;
+            var thumb = Img(Stretch(Node("Image", tMask.rectTransform)), null, Color.white);
+            thumb.raycastTarget = false;
+            var shotText = Text(shot, "Label", "Saved to Photos", 34, Snow, FontStyles.Bold);
+            shotText.textWrappingMode = TextWrappingModes.NoWrap;
+            shotGroup.alpha = 0f;
+
+            // tracking tips, under the top row
+            var tip = Pill(safe, "TrackingTip", new Vector2(0.5f, 1f), -150f, 0.7f, out CanvasGroup tipGroup);
+            var tipText = Text(tip, "Label", "Move your phone a little slower", 34, Snow, FontStyles.Bold);
+            tipText.textWrappingMode = TextWrappingModes.NoWrap;
+
+            // shown once the animal is down: what it is; tap for the fact card
             var chip = Node("Placed", safe);
             chip.anchorMin = chip.anchorMax = chip.pivot = new Vector2(0.5f, 0f);
             chip.anchoredPosition = new Vector2(0f, 72f);
-            LayoutBackground(chip, 2.2f, WithA(Night, 0.62f));
+            var chipBg = LayoutBackground(chip, 2.2f, WithA(Night, 0.62f));
+            chipBg.raycastTarget = true;
+            var chipBtn = chip.gameObject.AddComponent<Button>();
+            chipBtn.targetGraphic = chipBg;
             var v = chip.gameObject.AddComponent<VerticalLayoutGroup>();
-            v.padding = new RectOffset(48, 48, 26, 30); v.spacing = 4f;
+            v.padding = new RectOffset(52, 52, 26, 30); v.spacing = 4f;
             v.childAlignment = TextAnchor.MiddleCenter;
             v.childControlWidth = v.childControlHeight = true;
             v.childForceExpandWidth = v.childForceExpandHeight = false;
@@ -986,18 +2315,286 @@ namespace AR7103.EditorTools
             placedGroup.blocksRaycasts = false;
             var n = Text(chip, "Name", a.common, 40, Snow, FontStyles.Bold);
             n.alignment = TextAlignmentOptions.Center;
-            var h = Text(chip, "Hint", "Tap the floor to move it", 32, WithA(Snow, 0.7f), FontStyles.Normal);
+            var h = Text(chip, "Hint", "Tap for facts \u00b7 tap the floor to move it", 30, WithA(Snow, 0.7f), FontStyles.Normal);
             h.alignment = TextAlignmentOptions.Center;
+            h.raycastTarget = false; n.raycastTarget = false;
+
+            // teaching the gesture: a card above the chip
+            var coach = Node("PalmCoach", safe);
+            coach.anchorMin = coach.anchorMax = coach.pivot = new Vector2(0.5f, 0f);
+            coach.anchoredPosition = new Vector2(0f, 262f);
+            LayoutBackground(coach, 1.9f, WithA(Night, 0.66f));
+            var ch = coach.gameObject.AddComponent<HorizontalLayoutGroup>();
+            ch.padding = new RectOffset(40, 48, 32, 34); ch.spacing = 30f;
+            ch.childAlignment = TextAnchor.MiddleLeft;
+            ch.childControlWidth = ch.childControlHeight = true;
+            ch.childForceExpandWidth = ch.childForceExpandHeight = false;
+            var ccf = coach.gameObject.AddComponent<ContentSizeFitter>();
+            ccf.horizontalFit = ccf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var coachGroup = coach.gameObject.AddComponent<CanvasGroup>();
+            coachGroup.blocksRaycasts = false; coachGroup.interactable = false;
+            FixedIcon(coach, "Palm", _palmIcon, Rust, 96f);
+            var words = Node("Words", coach);
+            var wv = words.gameObject.AddComponent<VerticalLayoutGroup>();
+            wv.spacing = 6f; wv.childControlWidth = wv.childControlHeight = true;
+            wv.childForceExpandWidth = wv.childForceExpandHeight = false;
+            words.gameObject.AddComponent<LayoutElement>().preferredWidth = 720f;
+            Text(words, "Title", "Say hello", 40, Snow, FontStyles.Bold);
+            var cs = Text(words, "Body", $"Hold up an open palm to call the {a.common.ToLowerInvariant()} over.", 33,
+                          WithA(Snow, 0.78f), FontStyles.Normal, lineSpacing: 6f);
+            cs.textWrappingMode = TextWrappingModes.Normal;
+
+            // live feedback while a hand is in view (same spot as the coach)
+            var palm = Pill(safe, "PalmFeedback", new Vector2(0.5f, 0f), 262f, 0.7f, out CanvasGroup palmGroup, 36, 20, 18f);
+            FixedIcon(palm, "Palm", _palmIcon, Rust, 54f);
+            var palmText = Text(palm, "Label", $"Calling the {a.common.ToLowerInvariant()}\u2026", 34, Snow, FontStyles.Bold);
+            palmText.textWrappingMode = TextWrappingModes.NoWrap;
+
+            // the field card, in the chip's place when open: who it is, a few facts,
+            // the gestures to try, and its minigame
+            var card = Node("FactCard", safe);
+            card.anchorMin = new Vector2(0f, 0f); card.anchorMax = new Vector2(1f, 0f); card.pivot = new Vector2(0.5f, 0f);
+            card.offsetMin = new Vector2(24f, 24f); card.offsetMax = new Vector2(-24f, 24f);
+            LayoutBackground(card, 1.5f, WithA(Hex("080C0D"), 0.92f));
+            var cv = card.gameObject.AddComponent<VerticalLayoutGroup>();
+            cv.padding = new RectOffset(54, 54, 30, 54); cv.spacing = 40f;
+            cv.childControlWidth = cv.childControlHeight = true;
+            cv.childForceExpandWidth = true; cv.childForceExpandHeight = false;
+            card.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            var cardGroup = card.gameObject.AddComponent<CanvasGroup>();
+            cardGroup.blocksRaycasts = false; cardGroup.interactable = false;
+
+            // grab handle
+            var handleRow = Node("Handle", card);
+            handleRow.gameObject.AddComponent<LayoutElement>().preferredHeight = 12f;
+            var handle = Img(Node("Bar", handleRow), _round, WithA(Snow, 0.25f), sliced: true, ppu: 12f);
+            handle.rectTransform.anchorMin = handle.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            handle.rectTransform.sizeDelta = new Vector2(108f, 12f);
+            handle.raycastTarget = false;
+
+            // header: photo, names, close
+            var head = Node("Head", card);
+            var hh = head.gameObject.AddComponent<HorizontalLayoutGroup>();
+            hh.childAlignment = TextAnchor.MiddleLeft; hh.spacing = 36f;
+            hh.childControlWidth = hh.childControlHeight = true;
+            hh.childForceExpandWidth = false; hh.childForceExpandHeight = false;
+            var portrait = Node("Portrait", head);
+            var ple = portrait.gameObject.AddComponent<LayoutElement>();
+            ple.preferredWidth = ple.minWidth = ple.preferredHeight = ple.minHeight = 156f;
+            var pring = Img(Stretch(Node("Ring", portrait)), _circle, Rust);
+            pring.raycastTarget = false;
+            var pmask = Img(Stretch(Node("Mask", portrait)), _circle, Color.white);
+            pmask.rectTransform.offsetMin = new Vector2(6f, 6f); pmask.rectTransform.offsetMax = new Vector2(-6f, -6f);
+            pmask.gameObject.AddComponent<Mask>().showMaskGraphic = false;
+            var pphoto = Img(Node("Photo", pmask.rectTransform), AssetDatabase.LoadAssetAtPath<Sprite>($"{AnimalDir}/{a.file}.png"), Color.white);
+            pphoto.gameObject.AddComponent<CoverImage>().focus = new Vector2(a.focusX, 0.5f);
+            pphoto.raycastTarget = false;
+            var titles = Node("Titles", head);
+            var tv = titles.gameObject.AddComponent<VerticalLayoutGroup>();
+            tv.spacing = 4f; tv.childControlWidth = tv.childControlHeight = true;
+            tv.childForceExpandWidth = tv.childForceExpandHeight = false;
+            titles.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            Text(titles, "Name", a.common, 66, Snow, FontStyles.Bold, spacing: -0.5f);
+            Text(titles, "Latin", a.latin, 39, Lichen, FontStyles.Italic);
+            Button close = IconButton(head, "Close", _closeIcon, 108f, 40f, out _);
+            ((Image)close.targetGraphic).color = WithA(Snow, 0.1f);
+            var cle = close.gameObject.AddComponent<LayoutElement>();
+            cle.preferredWidth = cle.preferredHeight = cle.minWidth = cle.minHeight = 108f;
+
+            // three quick stats
+            var stats = Node("Stats", card);
+            var sh = stats.gameObject.AddComponent<HorizontalLayoutGroup>();
+            sh.spacing = 24f; sh.childControlWidth = sh.childControlHeight = true;
+            sh.childForceExpandWidth = true; sh.childForceExpandHeight = true;
+            foreach (var (label, value) in Stats(a.file))
+            {
+                var cell = Node(label, stats);
+                cell.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+                LayoutBackground(cell, 3f, WithA(Snow, 0.07f));
+                var cvl = cell.gameObject.AddComponent<VerticalLayoutGroup>();
+                cvl.padding = new RectOffset(30, 24, 26, 28); cvl.spacing = 6f;
+                cvl.childControlWidth = cvl.childControlHeight = true;
+                cvl.childForceExpandWidth = true; cvl.childForceExpandHeight = false;
+                Text(cell, "Label", label, 29, Lichen, FontStyles.Bold, spacing: 4f);
+                var vt = Text(cell, "Value", value, 44, Snow, FontStyles.Bold);
+                vt.textWrappingMode = TextWrappingModes.NoWrap;
+                vt.overflowMode = TextOverflowModes.Ellipsis;
+            }
+
+            // facts, numbered
+            var facts = Node("Facts", card);
+            var fvl = facts.gameObject.AddComponent<VerticalLayoutGroup>();
+            fvl.spacing = 24f; fvl.childControlWidth = fvl.childControlHeight = true;
+            fvl.childForceExpandWidth = true; fvl.childForceExpandHeight = false;
+            foreach (var (fact, i) in Facts(a.file).Select((f, i) => (f, i)))
+            {
+                var row = Node($"Fact{i}", facts);
+                var rh = row.gameObject.AddComponent<HorizontalLayoutGroup>();
+                rh.spacing = 30f; rh.childAlignment = TextAnchor.UpperLeft;
+                rh.childControlWidth = rh.childControlHeight = true;
+                rh.childForceExpandWidth = false; rh.childForceExpandHeight = false;
+                var badge = Node("Badge", row);
+                var ble = badge.gameObject.AddComponent<LayoutElement>();
+                ble.preferredWidth = ble.minWidth = ble.preferredHeight = ble.minHeight = 60f;
+                Img(Stretch(Node("Fill", badge)), _circle, i == 0 ? Rust : WithA(Rust, 0.2f)).raycastTarget = false;
+                var num = Text(badge, "N", (i + 1).ToString(), 33, i == 0 ? RustInk : Rust, FontStyles.Bold);
+                Stretch(num.rectTransform); num.alignment = TextAlignmentOptions.Center;
+                var ft = Text(row, "Text", fact, 40, WithA(Snow, 0.92f), FontStyles.Normal, lineSpacing: 4f);
+                ft.textWrappingMode = TextWrappingModes.Normal;
+                ft.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            }
+
+            // gestures to try
+            var tryRow = Node("TryHead", card);
+            var trh = tryRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+            trh.childControlWidth = trh.childControlHeight = true;
+            trh.childForceExpandWidth = false; trh.childForceExpandHeight = false;
+            trh.childAlignment = TextAnchor.LowerLeft;
+            var tl = Text(tryRow, "Label", "TRY A GESTURE", 29, Lichen, FontStyles.Bold, spacing: 5f);
+            tl.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+            Text(tryRow, "Hint", "Hold it up to the camera", 32, Lichen, FontStyles.Normal);
+            var tiles = Node("Gestures", card);
+            var tgh = tiles.gameObject.AddComponent<HorizontalLayoutGroup>();
+            tgh.spacing = 18f; tgh.childControlWidth = tgh.childControlHeight = true;
+            tgh.childForceExpandWidth = true; tgh.childForceExpandHeight = true;
+            foreach (var (icon, label, action, special) in new[] {
+                (_palmIcon, "Palm", "Come here", false), (_fistIcon, "Fist", "Startle", false),
+                (_pinchIcon, "Pinch", "Treat", false), (_pointIcon, "Point", SpecialName(a.file), true),
+                (_peaceIcon, "Peace", "Say cheese", false) })
+            {
+                var tile = Node(label, tiles);
+                tile.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1f;
+                LayoutBackground(tile, 3f, special ? WithA(Rust, 0.16f) : WithA(Snow, 0.07f));
+                if (special)
+                {
+                    var rim = Img(Stretch(Node("Rim", tile)), _stroke, Rust, sliced: true, ppu: 3f);
+                    rim.raycastTarget = false;
+                    rim.gameObject.AddComponent<LayoutElement>().ignoreLayout = true;
+                }
+                var tvl = tile.gameObject.AddComponent<VerticalLayoutGroup>();
+                tvl.padding = new RectOffset(8, 8, 28, 24); tvl.spacing = 10f;
+                tvl.childAlignment = TextAnchor.UpperCenter;
+                tvl.childControlWidth = tvl.childControlHeight = true;
+                tvl.childForceExpandWidth = false; tvl.childForceExpandHeight = false;
+                FixedIcon(tile, "Icon", icon, Rust, 72f);
+                var lt = Text(tile, "Label", label, 33, Snow, FontStyles.Bold);
+                lt.alignment = TextAlignmentOptions.Center;
+                var at = Text(tile, "Does", action, 29, special ? Rust : Lichen, FontStyles.Normal);
+                at.alignment = TextAlignmentOptions.Center;
+                at.textWrappingMode = TextWrappingModes.NoWrap;
+            }
+
+            // the minigame
+            var play = Node("Play", card);
+            play.gameObject.AddComponent<LayoutElement>().preferredHeight = 162f;
+            var playBg = Img(Stretch(Node("Fill", play)), _round, Rust, sliced: true, ppu: 1.1f);
+            var playBtn = play.gameObject.AddComponent<Button>();
+            playBtn.targetGraphic = playBg;
+            var pwords = Node("Words", play);
+            pwords.anchorMin = new Vector2(0f, 0f); pwords.anchorMax = new Vector2(1f, 1f);
+            pwords.offsetMin = new Vector2(66f, 0f); pwords.offsetMax = new Vector2(-170f, 0f);
+            var pwv = pwords.gameObject.AddComponent<VerticalLayoutGroup>();
+            pwv.childAlignment = TextAnchor.MiddleLeft; pwv.spacing = 2f;
+            pwv.childControlWidth = pwv.childControlHeight = true;
+            pwv.childForceExpandWidth = true; pwv.childForceExpandHeight = false;
+            var playTitle = Text(pwords, "Title", $"Play {GameTitle(a.file)}", 48, RustInk, FontStyles.Bold);
+            var playBest = Text(pwords, "Best", GameLength(a.file), 33, WithA(RustInk, 0.7f), FontStyles.Bold);
+            playTitle.raycastTarget = playBest.raycastTarget = false;
+            var pcirc = Img(Node("Go", play), _circle, RustInk);
+            pcirc.rectTransform.anchorMin = pcirc.rectTransform.anchorMax = pcirc.rectTransform.pivot = new Vector2(1f, 0.5f);
+            pcirc.rectTransform.anchoredPosition = new Vector2(-21f, 0f);
+            pcirc.rectTransform.sizeDelta = new Vector2(120f, 120f);
+            pcirc.raycastTarget = false;
+            var ptri = Img(Node("Icon", pcirc.rectTransform), _playIcon, Rust);
+            ptri.rectTransform.anchorMin = ptri.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
+            ptri.rectTransform.sizeDelta = new Vector2(48f, 48f);
+            ptri.rectTransform.anchoredPosition = new Vector2(4f, 0f);
+            ptri.raycastTarget = false;
+
+            // the big 3-2-1
+            var cd = Node("Countdown", safe);
+            cd.anchorMin = cd.anchorMax = cd.pivot = new Vector2(0.5f, 0.5f);
+            cd.sizeDelta = new Vector2(330f, 330f);
+            cd.anchoredPosition = new Vector2(0f, 120f);
+            Img(Stretch(Node("Disc", cd)), _circle, WithA(Night, 0.55f)).raycastTarget = false;
+            var cdText = Text(cd, "N", "3", 210, Snow, FontStyles.Bold);
+            Stretch(cdText.rectTransform); cdText.alignment = TextAlignmentOptions.Center;
+            cdText.raycastTarget = false;
+            var cdGroup = cd.gameObject.AddComponent<CanvasGroup>();
+            cdGroup.alpha = 0f; cdGroup.blocksRaycasts = false;
+
+            MiniGameHost host = BuildGameUI(canvas, safe);
+
+            var flash = Stretch(Node("Flash", root));
+            Img(flash, null, Color.white).raycastTarget = false;
+            var flashGroup = flash.gameObject.AddComponent<CanvasGroup>();
+            flashGroup.alpha = 0f; flashGroup.blocksRaycasts = false;
 
             var fader = Stretch(Node("Fader", root));
             Img(fader, null, Night);
             var faderGroup = fader.gameObject.AddComponent<CanvasGroup>();
             faderGroup.alpha = 1f; faderGroup.blocksRaycasts = false;
 
+            var sizer = canvas.gameObject.AddComponent<ARSizeToggle>();
+            sizer.button = sizeBtn;
+            sizer.highlight = hl.rectTransform;
+            sizer.lifeLabel = lifeLabel;
+            sizer.smallLabel = smallLabel;
+            sizer.activeInk = Night;
+            sizer.idleInk = Snow;
+            sizer.stage = GameObject.Find("Ground Plane Stage")?.transform;
+
+            // taps: UI stays UI, the animal opens its facts, only the floor moves it
+            var router = canvas.gameObject.AddComponent<ARTapRouter>();
+            router.planeFinder = UnityEngine.Object.FindFirstObjectByType<PlaneFinderBehaviour>(FindObjectsInactive.Include);
+            foreach (var l in UnityEngine.Object.FindObjectsByType<AnchorInputListenerBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                l.enabled = false;               // it forwards every tap, buttons included
+                EditorUtility.SetDirty(l);
+            }
+
+            var photo = canvas.gameObject.AddComponent<PhotoCapture>();
+            photo.shutter = shutterBtn;
+            photo.flash = flashGroup;
+            photo.savedToast = shotGroup;
+            photo.thumbnail = thumb;
+            photo.savedText = shotText;
+            photo.shutterSound = Clip("ui_shutter");
+
+            // everything but Back and Mute starts hidden; ARHud brings them in
+            sizeGroup.alpha = 0f; shutterGroup.alpha = 0f;
+            foreach (var g in new[] { placedGroup, cardGroup, coachGroup, palmGroup, tipGroup }) g.alpha = 0f;
+
             var hud = canvas.gameObject.AddComponent<ARHud>();
             hud.placedInfo = placedGroup;
             hud.fader = faderGroup;
             hud.backButton = back;
+            hud.animalName = a.common.ToLowerInvariant();
+            hud.infoButton = chipBtn;
+            hud.factCard = cardGroup;
+            hud.factClose = close;
+            hud.coach = coachGroup;
+            hud.palmPill = palmGroup;
+            hud.palmText = palmText;
+            hud.toast = tipGroup;
+            hud.toastText = tipText;
+            hud.muteButton = mute;
+            hud.muteIcon = muteIcon;
+            hud.soundOn = _soundOn;
+            hud.soundOff = _soundOff;
+            hud.sizeGroup = sizeGroup;
+            hud.shutterGroup = shutterGroup;
+            router.hud = hud;
+            router.games = host;
+            hud.games = host;
+            hud.playButton = playBtn;
+            hud.playTitle = playTitle;
+            hud.playBest = playBest;
+            hud.countdown = cdGroup;
+            hud.countdownText = cdText;
+            hud.palmIconImage = palm.Find("Palm")?.GetComponent<Image>();
+            hud.iconPalm = _palmIcon; hud.iconFist = _fistIcon; hud.iconPinch = _pinchIcon;
+            hud.iconPoint = _pointIcon; hud.iconPeace = _peaceIcon;
         }
 
         static void SetBuildScenes()
@@ -1023,7 +2620,7 @@ namespace AR7103.EditorTools
             PrepareForCapture(entry.GetComponent<Canvas>(), out Camera cam, out RenderTexture rt);
             entry.fader.alpha = 0f;
             SetImageAlpha(entry.backdropB, 0f);
-            foreach (var (page, scanned, label) in new[] { (0, true, "ready"), (1, true, "noAR") })
+            foreach (var (page, scanned, label) in new[] { (0, true, "ready"), (1, true, "noAR"), (3, true, "hare") })
             {
                 entry.backdropA.sprite = entry.backdrops[page];
                 FitAll();
@@ -1038,11 +2635,46 @@ namespace AR7103.EditorTools
 
             CaptureOverlay(ScenePath(AppScenes.Deer), "hare", "deer_scanning", placed: false, outDir);
             CaptureOverlay(ScenePath(AppScenes.Deer), "hare", "deer_placed", placed: true, outDir);
+            CaptureHudStates(outDir);
             Debug.Log("[AppUI] Captures written to " + Path.GetFullPath(outDir));
         }
 
+        /// <summary>The HUD's newer states, staged by hand: page card, palm coach and feedback, facts, a tracking tip.</summary>
+        public static void CaptureHudStates() =>
+            CaptureHudStates(Environment.GetEnvironmentVariable("APPUI_CAPTURE_DIR") ?? "Temp/AppUICapture");
+
+        static void CaptureHudStates(string outDir)
+        {
+            Directory.CreateDirectory(outDir);
+            string fox = ScenePath(AppScenes.Fox);
+            CaptureOverlay(fox, "hare", "hud_page", false, outDir, (flow, hud) =>
+            {
+                flow.title.text = flow.pageTitle; flow.subtitle.text = flow.pageSubtitle;
+                flow.statusLabel.text = "Waiting for the page";
+                if (flow.reticleGroup != null) flow.reticleGroup.alpha = 0f;
+                if (flow.pageHint != null) flow.pageHint.alpha = 1f;
+            });
+            CaptureOverlay(fox, "hare", "hud_coach", true, outDir, (flow, hud) => hud.coach.alpha = 1f);
+            CaptureOverlay(fox, "hare", "hud_palm", true, outDir, (flow, hud) => { hud.palmPill.alpha = 1f; });
+            CaptureOverlay(fox, "hare", "hud_facts", true, outDir, (flow, hud) => { hud.placedInfo.alpha = 0f; hud.factCard.alpha = 1f; hud.shutterGroup.alpha = 0f; });
+            CaptureOverlay(fox, "hare", "hud_tip", true, outDir, (flow, hud) => { hud.toast.alpha = 1f; hud.muteIcon.sprite = hud.soundOff; });
+            CaptureOverlay(fox, "hare", "hud_photo", true, outDir, (flow, hud) =>
+            {
+                var pc = hud.GetComponent<PhotoCapture>();
+                pc.savedToast.alpha = 1f;
+                pc.thumbnail.sprite = AssetDatabase.LoadAssetAtPath<Sprite>($"{AnimalDir}/hare.png");
+                pc.thumbnail.preserveAspect = false;
+                pc.thumbnail.gameObject.AddComponent<CoverImage>();
+                // show the "Small" half selected
+                var sz = hud.GetComponent<ARSizeToggle>();
+                sz.highlight.anchorMin = new Vector2(0.5f, 0f); sz.highlight.anchorMax = new Vector2(1f, 1f);
+                sz.lifeLabel.color = sz.idleInk; sz.smallLabel.color = sz.activeInk;
+            });
+        }
+
         /// <summary>Capture an animal scene's UI over a photo standing in for the camera feed.</summary>
-        static void CaptureOverlay(string scenePath, string feedPhoto, string label, bool placed, string outDir)
+        static void CaptureOverlay(string scenePath, string feedPhoto, string label, bool placed, string outDir,
+                                   Action<GroundScanFlow, ARHud> stage = null)
         {
             EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
             var canvases = UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsSortMode.None)
@@ -1063,6 +2695,8 @@ namespace AR7103.EditorTools
             var hud = UnityEngine.Object.FindFirstObjectByType<ARHud>();
             if (flow != null && flow.overlay != null) flow.overlay.alpha = placed ? 0f : 1f;
             if (hud != null && hud.placedInfo != null) hud.placedInfo.alpha = placed ? 1f : 0f;
+            if (hud != null && hud.sizeGroup != null) hud.sizeGroup.alpha = placed ? 1f : 0f;
+            if (hud != null && hud.shutterGroup != null) hud.shutterGroup.alpha = placed ? 1f : 0f;
 
             var fake = new GameObject("FakeFeed", typeof(RectTransform)).GetComponent<RectTransform>();
             fake.SetParent(canvases[0].transform, false); fake.SetAsFirstSibling();
@@ -1070,6 +2704,14 @@ namespace AR7103.EditorTools
             fake.gameObject.AddComponent<Image>().sprite =
                 AssetDatabase.LoadAssetAtPath<Sprite>($"{AnimalDir}/{feedPhoto}.png");
             fake.gameObject.AddComponent<CoverImage>();
+            if (hud != null)
+                foreach (var g in new[] { hud.coach, hud.palmPill, hud.factCard, hud.toast })
+                    if (g != null) g.alpha = 0f;
+            stage?.Invoke(flow, hud);
+            Canvas.ForceUpdateCanvases();
+            foreach (var c in canvases)
+                foreach (var lg in c.GetComponentsInChildren<LayoutGroup>(true).Reverse())
+                    LayoutRebuilder.ForceRebuildLayoutImmediate((RectTransform)lg.transform);
             Shoot(cam, rt, Path.Combine(outDir, label + ".png"));
             EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);   // discard capture edits
         }
@@ -1353,6 +2995,124 @@ namespace AR7103.EditorTools
             float qy = Mathf.Abs(py - h * 0.5f) - (h * 0.5f - r);
             float ox = Mathf.Max(qx, 0f), oy = Mathf.Max(qy, 0f);
             return Mathf.Sqrt(ox * ox + oy * oy) + Mathf.Min(Mathf.Max(qx, qy), 0f) - r;
+        }
+
+        // ---- icons, as signed distances (negative inside), anti-aliased over ~1.2 px
+
+        static float Capsule(float px, float py, float ax, float ay, float bx, float by, float r)
+        {
+            float pax = px - ax, pay = py - ay, bax = bx - ax, bay = by - ay;
+            float h = Mathf.Clamp01((pax * bax + pay * bay) / (bax * bax + bay * bay));
+            float dx = pax - bax * h, dy = pay - bay * h;
+            return Mathf.Sqrt(dx * dx + dy * dy) - r;
+        }
+
+        static float Arc(float px, float py, float cx, float cy, float radius, float halfWidth, float maxAngleDeg)
+        {
+            float dx = px - cx, dy = py - cy;
+            float len = Mathf.Sqrt(dx * dx + dy * dy);
+            float ang = Mathf.Abs(Mathf.Atan2(dy, dx)) * Mathf.Rad2Deg;
+            float d = Mathf.Abs(len - radius) - halfWidth;
+            if (ang > maxAngleDeg) d = Mathf.Max(d, (ang - maxAngleDeg) * Mathf.Deg2Rad * len);
+            return d;
+        }
+
+        static float Speaker(float x, float y)
+        {
+            float body = RoundRectSD(x - 23f, y - 46f, 22f, 36f, 4f);
+            float hh = 17f + (x - 44f) * (23f / 26f);
+            float cone = Mathf.Max(Mathf.Max(43f - x, x - 70f), Mathf.Abs(y - 64f) - hh);
+            return Mathf.Min(body, cone);
+        }
+
+        static void BakeIcons()
+        {
+            Func<int, int, float> aa(Func<float, float, float> sd) => (x, y) => Sat(0.5f - sd(x + .5f, y + .5f) / 1.2f);
+
+            // an open hand, palm toward you: palm, four fingers, thumb out to the side
+            _palmIcon = Bake("icon_palm", 128, 128, aa((x, y) =>
+            {
+                float d = RoundRectSD(x - 36f, y - 14f, 58f, 56f, 20f);
+                float[] fx = { 44f, 58f, 72f, 86f }, top = { 98f, 110f, 107f, 94f };
+                for (int i = 0; i < 4; i++) d = Mathf.Min(d, Capsule(x, y, fx[i], 52f, fx[i], top[i], 7.5f));
+                d = Mathf.Min(d, Capsule(x, y, 40f, 36f, 17f, 64f, 8f));
+                return d;
+            }), Vector4.zero);
+
+            _soundOn = Bake("icon_sound_on", 128, 128, aa((x, y) =>
+                Mathf.Min(Speaker(x, y), Mathf.Min(Arc(x, y, 70f, 64f, 20f, 4f, 50f), Arc(x, y, 70f, 64f, 36f, 4f, 50f)))),
+                Vector4.zero);
+
+            _soundOff = Bake("icon_sound_off", 128, 128, aa((x, y) =>
+                Mathf.Min(Speaker(x, y), Mathf.Min(Capsule(x, y, 84f, 50f, 110f, 78f, 4.5f), Capsule(x, y, 84f, 78f, 110f, 50f, 4.5f)))),
+                Vector4.zero);
+
+            // the other four hand signs, in the same silhouette style as the palm
+            _fistIcon = Bake("icon_fist", 128, 128, aa((x, y) =>
+            {
+                float d = RoundRectSD(x - 30f, y - 14f, 66f, 62f, 22f);                    // the fist
+                for (int i = 0; i < 4; i++)                                                 // knuckles
+                    d = Mathf.Min(d, Capsule(x, y, 38f + i * 15f, 70f, 38f + i * 15f, 82f, 8.5f));
+                d = Mathf.Max(d, -Capsule(x, y, 30f, 52f, 70f, 52f, 2.2f));                // finger crease
+                d = Mathf.Min(d, Capsule(x, y, 26f, 48f, 62f, 40f, 9f));                    // thumb across
+                return d;
+            }), Vector4.zero);
+            _pinchIcon = Bake("icon_pinch", 128, 128, aa((x, y) =>
+            {
+                float d = RoundRectSD(x - 36f, y - 12f, 56f, 50f, 20f);
+                float ring = Mathf.Abs(Mathf.Sqrt((x - 46f) * (x - 46f) + (y - 76f) * (y - 76f)) - 15f) - 6.5f;   // thumb + index O
+                d = Mathf.Min(d, ring);
+                d = Mathf.Min(d, Capsule(x, y, 40f, 54f, 36f, 70f, 7f));
+                foreach (var (fx, top) in new[] { (64f, 104f), (77f, 100f), (89f, 90f) })   // three fingers up
+                    d = Mathf.Min(d, Capsule(x, y, fx, 52f, fx, top, 7f));
+                return d;
+            }), Vector4.zero);
+            _pointIcon = Bake("icon_point", 128, 128, aa((x, y) =>
+            {
+                float d = RoundRectSD(x - 34f, y - 12f, 58f, 54f, 20f);
+                d = Mathf.Min(d, Capsule(x, y, 46f, 50f, 46f, 112f, 8f));                    // index, up
+                foreach (var fx in new[] { 60f, 74f, 87f })                                   // curled fingers
+                    d = Mathf.Min(d, Capsule(x, y, fx, 56f, fx, 66f, 8f));
+                d = Mathf.Min(d, Capsule(x, y, 38f, 36f, 20f, 58f, 8f));                      // thumb
+                return d;
+            }), Vector4.zero);
+            _peaceIcon = Bake("icon_peace", 128, 128, aa((x, y) =>
+            {
+                float d = RoundRectSD(x - 34f, y - 12f, 58f, 54f, 20f);
+                d = Mathf.Min(d, Capsule(x, y, 48f, 54f, 34f, 110f, 8f));                    // index, out
+                d = Mathf.Min(d, Capsule(x, y, 62f, 54f, 74f, 112f, 8f));                    // middle, out
+                foreach (var fx in new[] { 76f, 88f })
+                    d = Mathf.Min(d, Capsule(x, y, fx, 56f, fx, 66f, 7.5f));
+                d = Mathf.Min(d, Capsule(x, y, 38f, 36f, 22f, 56f, 8f));
+                return d;
+            }), Vector4.zero);
+
+            float Star(float x, float y, float cx, float cy, float R, float r)
+            {
+                // a five-point star as the max of its edge half-planes (good enough for an icon)
+                float ang = Mathf.Atan2(y - cy, x - cx) + Mathf.PI * 0.5f;
+                float seg = Mathf.PI * 2f / 5f;
+                float a = Mathf.Repeat(ang, seg) - seg * 0.5f;
+                float len = Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+                float px = Mathf.Cos(a) * len, py = Mathf.Abs(Mathf.Sin(a)) * len;
+                // edge from the outer point (R, 0) to the inner point at half a segment (r)
+                float ix = Mathf.Cos(seg * 0.5f) * r, iy = Mathf.Sin(seg * 0.5f) * r;
+                float ex = ix - R, ey = iy;
+                float nx = ey, ny = -ex;
+                float nl = Mathf.Sqrt(nx * nx + ny * ny);
+                return ((px - R) * nx + py * ny) / nl * -1f;
+            }
+            _starOn = Bake("icon_star_on", 128, 128, aa((x, y) => Star(x, y, 64f, 62f, 58f, 25f)), Vector4.zero);
+            _starOff = Bake("icon_star_off", 128, 128, aa((x, y) =>
+            {
+                float outer = Star(x, y, 64f, 62f, 58f, 25f);
+                return Mathf.Max(outer, -(outer + 7f));                                       // an outline
+            }), Vector4.zero);
+            _playIcon = Bake("icon_play", 64, 64, aa((x, y) =>
+                Mathf.Max(Mathf.Max(20f - x, (x - 20f) * 0.5f + Mathf.Abs(y - 32f) - 18f), -1f)), Vector4.zero);
+
+            _closeIcon = Bake("icon_close", 64, 64, aa((x, y) =>
+                Mathf.Min(Capsule(x, y, 18f, 18f, 46f, 46f, 3.5f), Capsule(x, y, 18f, 46f, 46f, 18f, 3.5f))), Vector4.zero);
         }
 
         static Sprite RoundRect(string name, int size, float r, int border) =>

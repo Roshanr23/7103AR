@@ -14,6 +14,9 @@ Shader "Custom/ShellFur BuiltIn"
         _BareBelow ("No Fur On Dark Albedo Below", Range(0, 0.5)) = 0.07
         _ShellIndex ("Shell Index", Float) = 0
         _ShellCount ("Shell Count", Float) = 24
+        // Opt-in: scale fur length per vertex by vertex colour red (the fox and hare
+        // carry short-face masks). Off by default so meshes without one are unchanged.
+        _UseLengthMask ("Length From Vertex Colour", Float) = 0
     }
 
     SubShader
@@ -36,12 +39,14 @@ Shader "Custom/ShellFur BuiltIn"
             float4 _MainTex_ST;
             fixed4 _Color;
             float _FurLength, _Density, _Thickness, _Gravity, _RootShade, _ShellIndex, _ShellCount, _BareBelow;
+            float _UseLengthMask;
 
             struct appdata
             {
                 float4 vertex : POSITION;
                 float3 normal : NORMAL;
                 float2 uv : TEXCOORD0;
+                float4 color : COLOR;
             };
 
             struct v2f
@@ -74,7 +79,8 @@ Shader "Custom/ShellFur BuiltIn"
                 float h = (_ShellIndex + 1.0) / _ShellCount;
                 float3 n = normalize(v.normal);
                 float3 downOS = normalize(mul((float3x3)unity_WorldToObject, float3(0, -1, 0)));
-                float3 offset = n * (_FurLength * h) + downOS * (_FurLength * _Gravity * h * h);
+                float len = _FurLength * lerp(1.0, v.color.r, _UseLengthMask);
+                float3 offset = n * (len * h) + downOS * (len * _Gravity * h * h);
                 o.pos = UnityObjectToClipPos(v.vertex + float4(offset, 0));
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
                 o.basePos = v.vertex.xyz;
