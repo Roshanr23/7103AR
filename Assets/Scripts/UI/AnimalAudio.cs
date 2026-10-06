@@ -107,7 +107,8 @@ namespace AR7103.UI
         {
             if (idleCalls == null || idleCalls.Length == 0) return;
             float now = Time.time;
-            if (Engaged) { _nextIdle = Mathf.Max(_nextIdle, now + 3f); return; }
+            // busy with the viewer, or a minigame on (a bark would bury the sounds the game is about)
+            if (Engaged || MiniGameHost.Running) { _nextIdle = Mathf.Max(_nextIdle, now + 3f); return; }
             if (now < _nextIdle || now < _quietUntil || Source().isPlaying) return;
 
             int i = Random.Range(0, idleCalls.Length);

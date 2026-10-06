@@ -229,8 +229,7 @@ namespace AR7103.UI
                 var go = new GameObject("MouseHunt Squeak");
                 go.transform.SetParent(stage, false);
                 _squeakSrc = go.AddComponent<AudioSource>();
-                AnimalAudio.Configure(_squeakSrc);
-                _squeakSrc.minDistance = 0.4f;
+                AnimalAudio.Configure(_squeakSrc);       // full volume within 1.5 m, like the animals' voices
             }
         }
 

@@ -35,11 +35,16 @@ namespace AR7103.UI
             _src.Play();
         }
 
+        [Tooltip("Share of the volume kept while a minigame runs, so its sounds come through.")]
+        [Range(0f, 1f)] public float duckDuringGames = 0.45f;
+        float _duck = 1f;
+
         void Update()
         {
-            if (_t >= fadeInSeconds) { _src.volume = volume; return; }
             _t += Time.unscaledDeltaTime;
-            _src.volume = volume * Mathf.SmoothStep(0f, 1f, _t / Mathf.Max(fadeInSeconds, 0.01f));
+            float fade = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(_t / Mathf.Max(fadeInSeconds, 0.01f)));
+            _duck = Mathf.MoveTowards(_duck, MiniGameHost.Running ? duckDuringGames : 1f, Time.unscaledDeltaTime / 0.6f);
+            _src.volume = volume * fade * _duck;
         }
     }
 }
